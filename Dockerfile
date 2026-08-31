@@ -19,12 +19,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o fdaae main.go
 # Stage 2: Minimal scratch image
 FROM scratch
 
+# Set working directory to /app so relative DB_PATH (e.g., data/finbase.db) resolves to /app/data/finbase.db
+WORKDIR /app
+
 # Copy root CA certificates for HTTPS external API requests
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy binary from builder
-COPY --from=builder /app/fdaae /fdaae
+COPY --from=builder /app/fdaae /app/fdaae
 
 EXPOSE 8080
 
-ENTRYPOINT ["/fdaae"]
+ENTRYPOINT ["/app/fdaae"]

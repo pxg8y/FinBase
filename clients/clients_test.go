@@ -179,3 +179,35 @@ func TestCircuitBreaker(t *testing.T) {
 		t.Errorf("Expected StateClosed after successful half-open execution, got %v", cb.State())
 	}
 }
+
+type mockTripper struct {
+	roundTripFunc func(req *http.Request) (*http.Response, error)
+}
+
+func (m *mockTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.roundTripFunc(req)
+}
+
+func TestFetchSECCIKFormatted(t *testing.T) {
+	cm := NewClientManager("TestApp user@test.com", "", "")
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				rec.Header().Set("Content-Type", "application/json")
+				rec.WriteString(`{
+					"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
+				}`)
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	cik, err := cm.FetchSECCIKForTicker(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchSECCIKForTicker failed: %v", err)
+	}
+	if cik != "0000320193" {
+		t.Errorf("Expected padded CIK '0000320193', got '%s'", cik)
+	}
+}

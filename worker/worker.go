@@ -78,12 +78,13 @@ func (wp *WorkerPool) dispatcher(ctx context.Context) {
 			return
 		case <-ticker.C:
 			// Fetch highest priority, oldest updated watchitem
-			item, err := wp.db.FetchNextPendingWatchitem(ctx)
+			item, err := wp.db.FetchNextWatchitem(ctx)
 			if err != nil {
 				log.Printf("[Dispatcher] Error fetching watchitem: %v", err)
 				continue
 			}
 			if item != nil {
+				oldStatus := item.Status
 				if err := wp.db.UpdateWatchitemStatus(ctx, item.Ticker, "queued"); err != nil {
 					log.Printf("[Dispatcher] Error updating status for ticker %s: %v", item.Ticker, err)
 					continue
@@ -91,8 +92,8 @@ func (wp *WorkerPool) dispatcher(ctx context.Context) {
 				select {
 				case wp.jobChan <- Job{Ticker: item.Ticker, Priority: item.Priority}:
 				default:
-					// Job channel full, revert status to pending
-					_ = wp.db.UpdateWatchitemStatus(ctx, item.Ticker, "pending")
+					// Job channel full, revert status to previous status
+					_ = wp.db.UpdateWatchitemStatus(ctx, item.Ticker, oldStatus)
 				}
 			}
 		}
@@ -150,7 +151,9 @@ func (wp *WorkerPool) processJob(ctx context.Context, job Job) {
 	// 3. SEC CIK lookup
 	secCIK, err := wp.clients.FetchSECCIKForTicker(ctx, tickerStr)
 	if err == nil {
-		cik = secCIK
+		cik = clients.FormatCIK(secCIK)
+	} else if cik != "" {
+		cik = clients.FormatCIK(cik)
 	}
 
 	// Upsert Company record in DB

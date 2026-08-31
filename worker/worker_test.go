@@ -133,3 +133,54 @@ func TestWorkerPoolProcessing(t *testing.T) {
 		t.Errorf("Expected status to change from pending, got %s", list[0].Status)
 	}
 }
+
+func TestDispatcherContinuousRescheduling(t *testing.T) {
+	database, err := db.NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	_, err = database.AddWatchitem(ctx, "AAPL", 10)
+	if err != nil {
+		t.Fatalf("Failed to add watchitem: %v", err)
+	}
+
+	// 1. Pending item is immediately returned
+	item, err := database.FetchNextWatchitem(ctx)
+	if err != nil || item == nil || item.Ticker != "AAPL" {
+		t.Fatalf("Expected pending item AAPL, got %+v (err: %v)", item, err)
+	}
+
+	// Mark item as completed with last_updated in the past (>5 mins ago)
+	if err := database.WithTx(ctx, func(exec db.Execer) error {
+		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET status = 'completed', last_updated = datetime('now', '-10 minutes') WHERE ticker = 'AAPL'")
+		return err
+	}); err != nil {
+		t.Fatalf("Failed to update status: %v", err)
+	}
+
+	// 2. Item older than 5 minutes is returned for re-scheduling
+	item, err = database.FetchNextWatchitem(ctx)
+	if err != nil || item == nil || item.Ticker != "AAPL" {
+		t.Fatalf("Expected completed item AAPL (older than 5 mins) to be re-eligible, got %+v (err: %v)", item, err)
+	}
+
+	// Mark item as completed recently (10 seconds ago)
+	if err := database.WithTx(ctx, func(exec db.Execer) error {
+		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET status = 'completed', last_updated = datetime('now', '-10 seconds') WHERE ticker = 'AAPL'")
+		return err
+	}); err != nil {
+		t.Fatalf("Failed to update status: %v", err)
+	}
+
+	// 3. Recently completed item is NOT returned (prevents tight re-queue loop)
+	item, err = database.FetchNextWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("FetchNextWatchitem error: %v", err)
+	}
+	if item != nil {
+		t.Fatalf("Expected nil for recently completed item to prevent tight loop, got %+v", item)
+	}
+}
