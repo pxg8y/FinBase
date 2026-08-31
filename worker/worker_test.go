@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +28,69 @@ func (m *MockBroadcaster) BroadcastUpdate(ticker string, data any) {
 	m.updates = append(m.updates, ticker)
 }
 
+func TestExtractAndStoreSECFacts(t *testing.T) {
+	database, err := db.NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	compID, err := database.UpsertCompany(ctx, &db.Company{
+		Ticker: "AAPL",
+		CIK:    "0000320193",
+		Name:   "Apple Inc.",
+	})
+	if err != nil {
+		t.Fatalf("Failed to upsert company: %v", err)
+	}
+
+	facts := &clients.SECCompanyFacts{
+		CIK:        320193,
+		EntityName: "Apple Inc.",
+		Facts: map[string]interface{}{
+			"us-gaap": map[string]interface{}{
+				"Revenues": map[string]interface{}{
+					"units": map[string]interface{}{
+						"USD": []interface{}{
+							map[string]interface{}{
+								"val": float64(89498000000),
+								"fy":  float64(2023),
+								"fp":  "FY",
+							},
+						},
+					},
+				},
+				"NetIncomeLoss": map[string]interface{}{
+					"units": map[string]interface{}{
+						"USD": []interface{}{
+							map[string]interface{}{
+								"val": float64(22956000000),
+								"fy":  float64(2023),
+								"fp":  "Q4",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	count := extractAndStoreSECFacts(ctx, database, compID, facts)
+	if count != 2 {
+		t.Errorf("Expected 2 fundamentals stored, got %d", count)
+	}
+
+	data, err := database.GetConsolidatedData(ctx, "AAPL")
+	if err != nil {
+		t.Fatalf("Failed to get consolidated data: %v", err)
+	}
+
+	if len(data.Fundamentals) != 2 {
+		t.Errorf("Expected 2 fundamentals in consolidated data, got %d", len(data.Fundamentals))
+	}
+}
+
 func TestWorkerPoolProcessing(t *testing.T) {
 	database, err := db.NewDB(":memory:")
 	if err != nil {
@@ -37,34 +98,30 @@ func TestWorkerPoolProcessing(t *testing.T) {
 	}
 	defer database.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	bgCtx := context.Background()
 
 	// Seed watchlist
-	_, err = database.AddWatchitem(ctx, "AAPL", 5)
+	_, err = database.AddWatchitem(bgCtx, "AAPL", 5)
 	if err != nil {
 		t.Fatalf("Failed to add watchitem: %v", err)
 	}
-
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}"))
-	}))
-	defer mockServer.Close()
 
 	clientMgr := clients.NewClientManager("TestApp user@test.com", "test-finnhub", "test-figi")
 
 	mockBroadcaster := &MockBroadcaster{}
 	wp := NewWorkerPool(database, clientMgr, mockBroadcaster, 2)
 
-	wp.Start(ctx)
+	workerCtx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
+	defer cancel()
+
+	wp.Start(workerCtx)
 
 	// Wait for job to be processed
 	time.Sleep(3 * time.Second)
 	wp.Stop()
 
 	// Check that action history or status updated
-	list, err := database.GetWatchlist(ctx)
+	list, err := database.GetWatchlist(bgCtx)
 	if err != nil {
 		t.Fatalf("Failed to fetch watchlist: %v", err)
 	}

@@ -23,12 +23,80 @@ var BufferPool = sync.Pool{
 	},
 }
 
+type CircuitState int
+
+const (
+	StateClosed CircuitState = iota
+	StateOpen
+	StateHalfOpen
+)
+
+type CircuitBreaker struct {
+	mu              sync.Mutex
+	state           CircuitState
+	failureCount    int
+	threshold       int
+	cooldown        time.Duration
+	lastStateChange time.Time
+}
+
+func NewCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		state:     StateClosed,
+		threshold: threshold,
+		cooldown:  cooldown,
+	}
+}
+
+func (cb *CircuitBreaker) State() CircuitState {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.state
+}
+
+func (cb *CircuitBreaker) Execute(fn func() error) error {
+	cb.mu.Lock()
+	now := time.Now()
+	if cb.state == StateOpen {
+		if now.Sub(cb.lastStateChange) >= cb.cooldown {
+			cb.state = StateHalfOpen
+			cb.lastStateChange = now
+		} else {
+			cb.mu.Unlock()
+			return fmt.Errorf("circuit breaker open")
+		}
+	}
+	cb.mu.Unlock()
+
+	err := fn()
+
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if err != nil {
+		cb.failureCount++
+		if cb.failureCount >= cb.threshold || cb.state == StateHalfOpen {
+			cb.state = StateOpen
+			cb.lastStateChange = time.Now()
+		}
+		return err
+	}
+
+	cb.failureCount = 0
+	cb.state = StateClosed
+	return nil
+}
+
 // ClientManager orchestrates rate-limited calls to financial data APIs.
 type ClientManager struct {
 	httpClient      *http.Client
 	openFIGILimiter ratelimit.Limiter // 25 requests per 6 seconds (~4.16 req/sec)
 	secLimiter      ratelimit.Limiter // 10 requests per second maximum (leaky bucket)
 	finnhubLimiter  *rate.Limiter     // 60 requests per minute (token bucket: 1 req/sec with burst)
+
+	openFIGICB *CircuitBreaker
+	secCB      *CircuitBreaker
+	finnhubCB  *CircuitBreaker
 
 	secUserAgent   string
 	finnhubAPIKey  string
@@ -49,6 +117,10 @@ func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey string) *Clien
 		secLimiter: ratelimit.New(10, ratelimit.Per(1*time.Second)),
 		// Finnhub: 60 req per minute => rate.Every(1*time.Second) with burst capacity (e.g., 5)
 		finnhubLimiter: rate.NewLimiter(rate.Every(time.Second), 5),
+
+		openFIGICB: NewCircuitBreaker(5, 30*time.Second),
+		secCB:      NewCircuitBreaker(5, 30*time.Second),
+		finnhubCB:  NewCircuitBreaker(5, 30*time.Second),
 
 		secUserAgent:   secUserAgent,
 		finnhubAPIKey:  finnhubAPIKey,
@@ -79,59 +151,64 @@ type OpenFIGIResult struct {
 }
 
 func (cm *ClientManager) FetchOpenFIGI(ctx context.Context, ticker string) (*OpenFIGIResult, error) {
-	cm.openFIGILimiter.Take()
+	var result *OpenFIGIResult
+	err := cm.openFIGICB.Execute(func() error {
+		cm.openFIGILimiter.Take()
 
-	reqBody := []OpenFIGIMappingRequest{
-		{
-			IDType:  "TICKER",
-			IDValue: ticker,
-		},
-	}
+		reqBody := []OpenFIGIMappingRequest{
+			{
+				IDType:  "TICKER",
+				IDValue: ticker,
+			},
+		}
 
-	buf := BufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer BufferPool.Put(buf)
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
 
-	if err := json.NewEncoder(buf).Encode(reqBody); err != nil {
-		return nil, fmt.Errorf("openfigi encode error: %w", err)
-	}
+		if err := json.NewEncoder(buf).Encode(reqBody); err != nil {
+			return fmt.Errorf("openfigi encode error: %w", err)
+		}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openfigi.com/v3/mapping", buf)
-	if err != nil {
-		return nil, fmt.Errorf("openfigi create request error: %w", err)
-	}
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openfigi.com/v3/mapping", buf)
+		if err != nil {
+			return fmt.Errorf("openfigi create request error: %w", err)
+		}
 
-	req.Header.Set("Content-Type", "application/json")
-	if cm.openFIGIAPIKey != "" {
-		req.Header.Set("X-OPENFIGI-KEY", cm.openFIGIAPIKey)
-	}
+		req.Header.Set("Content-Type", "application/json")
+		if cm.openFIGIAPIKey != "" {
+			req.Header.Set("X-OPENFIGI-KEY", cm.openFIGIAPIKey)
+		}
 
-	resp, err := cm.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("openfigi http error: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("openfigi http error: %w", err)
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openfigi HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("openfigi HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
 
-	var results []OpenFIGIResult
-	buf.Reset()
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return nil, fmt.Errorf("openfigi read body error: %w", err)
-	}
+		var results []OpenFIGIResult
+		buf.Reset()
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("openfigi read body error: %w", err)
+		}
 
-	if err := json.NewDecoder(buf).Decode(&results); err != nil {
-		return nil, fmt.Errorf("openfigi decode error: %w", err)
-	}
+		if err := json.NewDecoder(buf).Decode(&results); err != nil {
+			return fmt.Errorf("openfigi decode error: %w", err)
+		}
 
-	if len(results) == 0 {
-		return nil, fmt.Errorf("openfigi returned empty results for ticker %s", ticker)
-	}
+		if len(results) == 0 {
+			return fmt.Errorf("openfigi returned empty results for ticker %s", ticker)
+		}
 
-	return &results[0], nil
+		result = &results[0]
+		return nil
+	})
+	return result, err
 }
 
 // SEC EDGAR API Structs
@@ -153,44 +230,49 @@ func FormatCIK(cik string) string {
 }
 
 func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCompanyFacts, error) {
-	cm.secLimiter.Take()
+	var facts *SECCompanyFacts
+	err := cm.secCB.Execute(func() error {
+		cm.secLimiter.Take()
 
-	formattedCIK := FormatCIK(cik)
-	url := fmt.Sprintf("https://data.sec.gov/api/xbrl/companyfacts/CIK%s.json", formattedCIK)
+		formattedCIK := FormatCIK(cik)
+		url := fmt.Sprintf("https://data.sec.gov/api/xbrl/companyfacts/CIK%s.json", formattedCIK)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sec create request error: %w", err)
-	}
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("sec create request error: %w", err)
+		}
 
-	req.Header.Set("User-Agent", cm.secUserAgent)
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
+		req.Header.Set("User-Agent", cm.secUserAgent)
+		req.Header.Set("Accept-Encoding", "gzip, deflate")
 
-	resp, err := cm.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("sec http error: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("sec http error: %w", err)
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("sec HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("sec HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
 
-	buf := BufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer BufferPool.Put(buf)
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
 
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return nil, fmt.Errorf("sec read body error: %w", err)
-	}
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("sec read body error: %w", err)
+		}
 
-	var facts SECCompanyFacts
-	if err := json.NewDecoder(buf).Decode(&facts); err != nil {
-		return nil, fmt.Errorf("sec decode error: %w", err)
-	}
+		var f SECCompanyFacts
+		if err := json.NewDecoder(buf).Decode(&f); err != nil {
+			return fmt.Errorf("sec decode error: %w", err)
+		}
 
-	return &facts, nil
+		facts = &f
+		return nil
+	})
+	return facts, err
 }
 
 // Finnhub API Structs
@@ -218,134 +300,149 @@ type FinnhubQuote struct {
 }
 
 func (cm *ClientManager) FetchFinnhubQuote(ctx context.Context, ticker string) (*FinnhubQuote, error) {
-	if err := cm.finnhubLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("finnhub rate limit wait error: %w", err)
-	}
+	var quote *FinnhubQuote
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
 
-	url := fmt.Sprintf("https://finnhub.io/api/v1/quote?symbol=%s", ticker)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("finnhub create request error: %w", err)
-	}
+		url := fmt.Sprintf("https://finnhub.io/api/v1/quote?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub create request error: %w", err)
+		}
 
-	if cm.finnhubAPIKey != "" {
-		req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
-	}
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
 
-	resp, err := cm.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("finnhub http error: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub http error: %w", err)
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("finnhub quote HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub quote HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
 
-	buf := BufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer BufferPool.Put(buf)
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
 
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return nil, fmt.Errorf("finnhub read body error: %w", err)
-	}
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub read body error: %w", err)
+		}
 
-	var quote FinnhubQuote
-	if err := json.NewDecoder(buf).Decode(&quote); err != nil {
-		return nil, fmt.Errorf("finnhub decode error: %w", err)
-	}
+		var q FinnhubQuote
+		if err := json.NewDecoder(buf).Decode(&q); err != nil {
+			return fmt.Errorf("finnhub decode error: %w", err)
+		}
 
-	return &quote, nil
+		quote = &q
+		return nil
+	})
+	return quote, err
 }
 
 func (cm *ClientManager) FetchFinnhubProfile(ctx context.Context, ticker string) (*FinnhubProfile, error) {
-	if err := cm.finnhubLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("finnhub rate limit wait error: %w", err)
-	}
+	var profile *FinnhubProfile
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
 
-	url := fmt.Sprintf("https://finnhub.io/api/v1/stock/profile2?symbol=%s", ticker)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("finnhub profile create request error: %w", err)
-	}
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/profile2?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub profile create request error: %w", err)
+		}
 
-	if cm.finnhubAPIKey != "" {
-		req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
-	}
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
 
-	resp, err := cm.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("finnhub profile http error: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub profile http error: %w", err)
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("finnhub profile HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub profile HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
 
-	buf := BufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer BufferPool.Put(buf)
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
 
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return nil, fmt.Errorf("finnhub profile read body error: %w", err)
-	}
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub profile read body error: %w", err)
+		}
 
-	var profile FinnhubProfile
-	if err := json.NewDecoder(buf).Decode(&profile); err != nil {
-		return nil, fmt.Errorf("finnhub profile decode error: %w", err)
-	}
+		var p FinnhubProfile
+		if err := json.NewDecoder(buf).Decode(&p); err != nil {
+			return fmt.Errorf("finnhub profile decode error: %w", err)
+		}
 
-	return &profile, nil
+		profile = &p
+		return nil
+	})
+	return profile, err
 }
 
 // CIK Lookup helper from SEC ticker-to-CIK mapping if needed
 func (cm *ClientManager) FetchSECCIKForTicker(ctx context.Context, ticker string) (string, error) {
-	cm.secLimiter.Take()
+	var cik string
+	err := cm.secCB.Execute(func() error {
+		cm.secLimiter.Take()
 
-	url := "https://www.sec.gov/files/company_tickers.json"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", cm.secUserAgent)
-
-	resp, err := cm.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("SEC tickers HTTP status %d", resp.StatusCode)
-	}
-
-	buf := BufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer BufferPool.Put(buf)
-
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return "", err
-	}
-
-	var tickersMap map[string]struct {
-		CIK    int    `json:"cik_str"`
-		Ticker string `json:"ticker"`
-		Title  string `json:"title"`
-	}
-
-	if err := json.NewDecoder(buf).Decode(&tickersMap); err != nil {
-		return "", err
-	}
-
-	targetTicker := strings.ToUpper(ticker)
-	for _, entry := range tickersMap {
-		if strings.ToUpper(entry.Ticker) == targetTicker {
-			return strconv.Itoa(entry.CIK), nil
+		url := "https://www.sec.gov/files/company_tickers.json"
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return err
 		}
-	}
+		req.Header.Set("User-Agent", cm.secUserAgent)
 
-	return "", fmt.Errorf("CIK not found for ticker %s", ticker)
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("SEC tickers HTTP status %d", resp.StatusCode)
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return err
+		}
+
+		var tickersMap map[string]struct {
+			CIK    int    `json:"cik_str"`
+			Ticker string `json:"ticker"`
+			Title  string `json:"title"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&tickersMap); err != nil {
+			return err
+		}
+
+		targetTicker := strings.ToUpper(ticker)
+		for _, entry := range tickersMap {
+			if strings.ToUpper(entry.Ticker) == targetTicker {
+				cik = strconv.Itoa(entry.CIK)
+				return nil
+			}
+		}
+
+		return fmt.Errorf("CIK not found for ticker %s", ticker)
+	})
+	return cik, err
 }
