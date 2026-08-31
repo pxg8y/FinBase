@@ -100,3 +100,47 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 		t.Errorf("Unexpected action history: %+v", data.History)
 	}
 }
+
+func TestDeleteWatchitem(t *testing.T) {
+	database, err := NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize memory DB: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Add items to watchlist
+	if _, err := database.AddWatchitem(ctx, "AAPL", 10); err != nil {
+		t.Fatalf("Failed to add watchitem AAPL: %v", err)
+	}
+	if _, err := database.AddWatchitem(ctx, "MSFT", 5); err != nil {
+		t.Fatalf("Failed to add watchitem MSFT: %v", err)
+	}
+
+	list, err := database.GetWatchlist(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get watchlist: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("Expected 2 watchitems, got %d", len(list))
+	}
+
+	// Delete AAPL with whitespace and lowercase to test ticker normalization
+	if err := database.DeleteWatchitem(ctx, "  aapl  "); err != nil {
+		t.Fatalf("Failed to delete watchitem aapl: %v", err)
+	}
+
+	list, err = database.GetWatchlist(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get watchlist after deletion: %v", err)
+	}
+	if len(list) != 1 || list[0].Ticker != "MSFT" {
+		t.Errorf("Expected watchlist to contain only MSFT, got %+v", list)
+	}
+
+	// Deleting a non-existent item should not return error
+	if err := database.DeleteWatchitem(ctx, "NONEXISTENT"); err != nil {
+		t.Fatalf("Deleting non-existent watchitem returned error: %v", err)
+	}
+}
