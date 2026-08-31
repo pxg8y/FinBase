@@ -74,7 +74,8 @@ func (b *SSEBroker) listen() {
 }
 
 func (b *SSEBroker) BroadcastLog(ticker, status, message string) {
-	b.broadcast <- SSEEvent{
+	select {
+	case b.broadcast <- SSEEvent{
 		Event: "log",
 		Data: SSELogMessage{
 			Timestamp: time.Now(),
@@ -82,13 +83,20 @@ func (b *SSEBroker) BroadcastLog(ticker, status, message string) {
 			Status:    status,
 			Message:   message,
 		},
+	}:
+	default:
+		log.Printf("[SSEBroker] Broadcast buffer full, dropping log for %s", ticker)
 	}
 }
 
 func (b *SSEBroker) BroadcastUpdate(ticker string, data any) {
-	b.broadcast <- SSEEvent{
+	select {
+	case b.broadcast <- SSEEvent{
 		Event: "company_update",
 		Data:  data,
+	}:
+	default:
+		log.Printf("[SSEBroker] Broadcast buffer full, dropping update for %s", ticker)
 	}
 }
 

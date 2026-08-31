@@ -49,6 +49,22 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 		t.Fatalf("Failed to insert fundamental data: %v", err)
 	}
 
+	batchItems := []FundamentalItem{
+		{Period: "2023-Q1", MetricName: "NetIncome", Value: 24160000000},
+		{Period: "2023-Q2", MetricName: "NetIncome", Value: 24160000000},
+	}
+	if err := database.InsertFundamentalsBatch(ctx, compID, batchItems); err != nil {
+		t.Fatalf("Failed to insert fundamentals batch: %v", err)
+	}
+
+	queuedItem, err := database.FetchAndQueueNextWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Failed to fetch and queue next watchitem: %v", err)
+	}
+	if queuedItem == nil || queuedItem.Ticker != "AAPL" {
+		t.Errorf("Expected queued item AAPL, got %+v", queuedItem)
+	}
+
 	if err := database.LogAction(ctx, "AAPL", "FETCH", "SUCCESS", "Fetched market and fundamental data"); err != nil {
 		t.Fatalf("Failed to log action: %v", err)
 	}
@@ -64,8 +80,8 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 	if len(data.MarketData) != 1 || data.MarketData[0].CurrentPrice != 150.25 {
 		t.Errorf("Unexpected market data: %+v", data.MarketData)
 	}
-	if len(data.Fundamentals) != 1 || data.Fundamentals[0].MetricName != "Revenues" {
-		t.Errorf("Unexpected fundamentals: %+v", data.Fundamentals)
+	if len(data.Fundamentals) != 3 {
+		t.Errorf("Unexpected fundamentals count: %+v", data.Fundamentals)
 	}
 	if len(data.History) != 1 || data.History[0].Status != "SUCCESS" {
 		t.Errorf("Unexpected action history: %+v", data.History)

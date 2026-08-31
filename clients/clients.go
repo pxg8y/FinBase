@@ -219,14 +219,20 @@ type SECCompanyFacts struct {
 }
 
 func FormatCIK(cik string) string {
-	cikDigits := strings.TrimLeft(cik, "0")
-	if cikDigits == "" {
+	var digits strings.Builder
+	for _, r := range cik {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	cikStr := strings.TrimLeft(digits.String(), "0")
+	if cikStr == "" {
 		return "0000000000"
 	}
-	if len(cikDigits) >= 10 {
-		return cikDigits
+	if len(cikStr) >= 10 {
+		return cikStr[len(cikStr)-10:]
 	}
-	return fmt.Sprintf("%010s", cikDigits)
+	return fmt.Sprintf("%010s", cikStr)
 }
 
 func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCompanyFacts, error) {

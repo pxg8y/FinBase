@@ -235,6 +235,27 @@ func (db *DB) Migrate() error {
 	})
 }
 
+type FundamentalItem struct {
+	Period     string
+	MetricName string
+	Value      float64
+}
+
+func (db *DB) InsertFundamentalsBatch(ctx context.Context, companyID int64, items []FundamentalItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, item := range items {
+			_, err := exec.ExecContext(ctx, "INSERT INTO fundamentals (company_id, period, metric_name, value) VALUES (?, ?, ?, ?)", companyID, item.Period, item.MetricName, item.Value)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // Watchlist methods
 func (db *DB) GetWatchlist(ctx context.Context) ([]Watchitem, error) {
 	rows, err := db.ReadDB.QueryContext(ctx, "SELECT id, ticker, priority, status, last_updated FROM watchlist ORDER BY priority DESC, id ASC")
@@ -290,6 +311,45 @@ func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*W
 	})
 	if err != nil {
 		return nil, err
+	}
+	return &item, nil
+}
+
+// FetchAndQueueNextWatchitem atomically fetches the next eligible watchitem and marks it as queued.
+func (db *DB) FetchAndQueueNextWatchitem(ctx context.Context) (*Watchitem, error) {
+	var item Watchitem
+	err := db.WithTx(ctx, func(exec Execer) error {
+		query := `
+			SELECT id, ticker, priority, status, last_updated
+			FROM watchlist
+			WHERE status = 'pending'
+			   OR (status NOT IN ('queued', 'processing') AND last_updated <= datetime('now', '-5 minutes'))
+			ORDER BY (CASE WHEN status = 'pending' THEN 0 ELSE 1 END) ASC, priority DESC, last_updated ASC
+			LIMIT 1
+		`
+		var lastUpdatedStr string
+		err := exec.QueryRowContext(ctx, query).Scan(
+			&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr,
+		)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		item.LastUpdated, _ = time.Parse("2006-01-02 15:04:05", lastUpdatedStr)
+		if item.LastUpdated.IsZero() {
+			item.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+		}
+
+		_, err = exec.ExecContext(ctx, "UPDATE watchlist SET status = 'queued', last_updated = CURRENT_TIMESTAMP WHERE id = ?", item.ID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if item.ID == 0 {
+		return nil, nil
 	}
 	return &item, nil
 }
