@@ -30,6 +30,9 @@ func main() {
 	secUserAgent := os.Getenv("SEC_USER_AGENT")
 	finnhubAPIKey := os.Getenv("FINNHUB_API_KEY")
 	openFIGIAPIKey := os.Getenv("OPENFIGI_API_KEY")
+	tiingoAPIKey := os.Getenv("TIINGO_API_KEY")
+	twelveDataAPIKey := os.Getenv("TWELVE_DATA_API_KEY")
+	fmpAPIKey := os.Getenv("FMP_API_KEY")
 
 	log.Printf("Initializing FinBase FDAAE Engine...")
 	database, err := db.NewDB(dbPath)
@@ -38,7 +41,7 @@ func main() {
 	}
 	defer database.Close()
 
-	clientMgr := clients.NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey)
+	clientMgr := clients.NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey, twelveDataAPIKey, fmpAPIKey)
 	broker := api.NewSSEBroker()
 
 	wp := worker.NewWorkerPool(database, clientMgr, broker, 0)

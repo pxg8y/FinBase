@@ -61,13 +61,57 @@ func TestExtractAndStoreSECFacts(t *testing.T) {
 						},
 					},
 				},
-				"NetIncomeLoss": map[string]interface{}{
+				"EarningsPerShareDiluted": map[string]interface{}{
+					"units": map[string]interface{}{
+						"USD/shares": []interface{}{
+							map[string]interface{}{
+								"val": float64(6.13),
+								"fy":  float64(2023),
+								"fp":  "FY",
+							},
+						},
+					},
+				},
+				"GrossProfit": map[string]interface{}{
 					"units": map[string]interface{}{
 						"USD": []interface{}{
 							map[string]interface{}{
-								"val": float64(22956000000),
+								"val": float64(170000000000),
 								"fy":  float64(2023),
-								"fp":  "Q4",
+								"fp":  "FY",
+							},
+						},
+					},
+				},
+				"Liabilities": map[string]interface{}{
+					"units": map[string]interface{}{
+						"USD": []interface{}{
+							map[string]interface{}{
+								"val": float64(290000000000),
+								"fy":  float64(2023),
+								"fp":  "FY",
+							},
+						},
+					},
+				},
+				"NetCashProvidedByUsedInOperatingActivities": map[string]interface{}{
+					"units": map[string]interface{}{
+						"USD": []interface{}{
+							map[string]interface{}{
+								"val": float64(110543000000),
+								"fy":  float64(2023),
+								"fp":  "FY",
+							},
+						},
+					},
+				},
+				"PaymentsToAcquirePropertyPlantAndEquipment": map[string]interface{}{
+					"units": map[string]interface{}{
+						"USD": []interface{}{
+							map[string]interface{}{
+								"val": float64(10959000000),
+								"fy":  float64(2023),
+								"fp":  "FY",
 							},
 						},
 					},
@@ -77,8 +121,8 @@ func TestExtractAndStoreSECFacts(t *testing.T) {
 	}
 
 	count := extractAndStoreSECFacts(ctx, database, compID, facts)
-	if count != 2 {
-		t.Errorf("Expected 2 fundamentals stored, got %d", count)
+	if count != 5 { // Revenues, EPS, GrossProfit, TotalLiabilities, FreeCashFlow
+		t.Errorf("Expected 5 fundamentals stored, got %d", count)
 	}
 
 	data, err := database.GetConsolidatedData(ctx, "AAPL")
@@ -86,8 +130,42 @@ func TestExtractAndStoreSECFacts(t *testing.T) {
 		t.Fatalf("Failed to get consolidated data: %v", err)
 	}
 
-	if len(data.Fundamentals) != 2 {
-		t.Errorf("Expected 2 fundamentals in consolidated data, got %d", len(data.Fundamentals))
+	if len(data.Fundamentals) != 5 {
+		t.Errorf("Expected 5 fundamentals in consolidated data, got %d", len(data.Fundamentals))
+	}
+}
+
+func TestExtractAndStoreFMPFacts(t *testing.T) {
+	database, err := db.NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	compID, err := database.UpsertCompany(ctx, &db.Company{
+		Ticker: "SHOP",
+		Name:   "Shopify Inc.",
+	})
+	if err != nil {
+		t.Fatalf("Failed to upsert company: %v", err)
+	}
+
+	stmts := []clients.FMPIncomeStatement{
+		{
+			CalendarYear:    "2023",
+			Period:          "FY",
+			Revenue:         7060000000,
+			GrossProfit:     3500000000,
+			OperatingIncome: 500000000,
+			NetIncome:       132000000,
+			EpsDiluted:      0.10,
+		},
+	}
+
+	count := extractAndStoreFMPFacts(ctx, database, compID, stmts)
+	if count != 5 {
+		t.Errorf("Expected 5 FMP fundamentals stored, got %d", count)
 	}
 }
 
@@ -106,7 +184,7 @@ func TestWorkerPoolProcessing(t *testing.T) {
 		t.Fatalf("Failed to add watchitem: %v", err)
 	}
 
-	clientMgr := clients.NewClientManager("TestApp user@test.com", "test-finnhub", "test-figi")
+	clientMgr := clients.NewClientManager("TestApp user@test.com", "test-finnhub", "test-figi", "test-tiingo", "test-twelve", "test-fmp")
 
 	mockBroadcaster := &MockBroadcaster{}
 	wp := NewWorkerPool(database, clientMgr, mockBroadcaster, 2)

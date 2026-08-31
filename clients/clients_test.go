@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,7 +107,7 @@ func TestClientManagerMockAPIs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cm := NewClientManager("TestApp user@test.com", "test-finnhub-key", "test-figi-key")
+	cm := NewClientManager("TestApp user@test.com", "test-finnhub-key", "test-figi-key", "test-tiingo-key", "test-twelve-key", "test-fmp-key")
 	cm.httpClient = server.Client()
 
 	// Redirect transport to mock server
@@ -190,8 +191,80 @@ func (m *mockTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return m.roundTripFunc(req)
 }
 
+func TestMarketDataWaterfall(t *testing.T) {
+	finnhubStatus := http.StatusTooManyRequests // 429
+	tiingoStatus := http.StatusOK
+	twelveStatus := http.StatusOK
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/api/v1/quote"):
+			w.WriteHeader(finnhubStatus)
+			if finnhubStatus == http.StatusOK {
+				json.NewEncoder(w).Encode(FinnhubQuote{CurrentPrice: 150.0, OpenPriceOfDay: 148.0})
+			} else {
+				w.Write([]byte("Rate limit exceeded"))
+			}
+		case strings.Contains(r.URL.Path, "/tiingo/daily/"):
+			w.WriteHeader(tiingoStatus)
+			if tiingoStatus == http.StatusOK {
+				json.NewEncoder(w).Encode([]TiingoPrice{{Close: 152.0, Open: 151.0}})
+			} else {
+				w.Write([]byte("Error"))
+			}
+		case strings.Contains(r.URL.Path, "/quote"):
+			w.WriteHeader(twelveStatus)
+			if twelveStatus == http.StatusOK {
+				json.NewEncoder(w).Encode(TwelveDataQuote{Close: "155.0", Open: "154.0", Status: "ok"})
+			} else {
+				w.Write([]byte("Error"))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cm := NewClientManager("TestApp", "fh", "figi", "tiingo", "twelve", "fmp")
+	cm.httpClient = server.Client()
+
+	// Replace URLs for testing by custom transport or testing waterfall logic directly
+	// Since URL is hardcoded in fetchers, let's test that waterfall falls through correctly when Finnhub fails
+	// We can test individual fetchers or mock HTTP transport
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				if strings.Contains(req.URL.String(), "finnhub.io") {
+					rec.WriteHeader(http.StatusTooManyRequests)
+					rec.WriteString("429 Too Many Requests")
+				} else if strings.Contains(req.URL.String(), "tiingo.com") {
+					rec.WriteHeader(http.StatusOK)
+					rec.Header().Set("Content-Type", "application/json")
+					rec.WriteString(`[{"close": 152.5, "open": 150.0, "high": 153.0, "low": 149.5, "volume": 500000}]`)
+				} else if strings.Contains(req.URL.String(), "twelvedata.com") {
+					rec.WriteHeader(http.StatusOK)
+					rec.Header().Set("Content-Type", "application/json")
+					rec.WriteString(`{"close": "155.0", "open": "154.0", "high": "156.0", "low": "153.0", "volume": "600000", "status": "ok"}`)
+				} else {
+					rec.WriteHeader(http.StatusNotFound)
+				}
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	quote, err := cm.FetchMarketDataWaterfall(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchMarketDataWaterfall failed: %v", err)
+	}
+	if quote.Source != "Tiingo" || quote.CurrentPrice != 152.5 {
+		t.Errorf("Expected fallback to Tiingo with price 152.5, got source %s price %f", quote.Source, quote.CurrentPrice)
+	}
+}
+
 func TestFetchSECCIKFormatted(t *testing.T) {
-	cm := NewClientManager("TestApp user@test.com", "", "")
+	cm := NewClientManager("TestApp user@test.com", "", "", "", "", "")
 	cm.httpClient = &http.Client{
 		Transport: &mockTripper{
 			roundTripFunc: func(req *http.Request) (*http.Response, error) {
