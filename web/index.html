@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinBase - Financial Data Aggregation & Analysis Engine</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-color: #f8fafc;
+            --accent-color: #38bdf8;
+            --border-color: #334155;
+            --success-color: #22c55e;
+            --warning-color: #eab308;
+            --danger-color: #ef4444;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+            margin-bottom: 25px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            color: var(--accent-color);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+        }
+
+        .form-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        input, button {
+            padding: 10px 14px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-size: 0.95rem;
+        }
+
+        input:focus {
+            outline: 2px solid var(--accent-color);
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: #0f172a;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            transition: opacity 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            color: #94a3b8;
+            font-weight: 600;
+        }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .badge-pending { background-color: #334155; color: #cbd5e1; }
+        .badge-processing { background-color: var(--warning-color); color: #0f172a; }
+        .badge-completed { background-color: var(--success-color); color: #0f172a; }
+        .badge-error { background-color: var(--danger-color); color: #ffffff; }
+
+        .btn-sm {
+            padding: 4px 8px;
+            font-size: 0.8rem;
+        }
+
+        .btn-danger {
+            background-color: var(--danger-color);
+            color: #fff;
+        }
+
+        #log-stream {
+            height: 250px;
+            overflow-y: auto;
+            background-color: #020617;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+
+        .log-entry {
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        .log-time { color: #64748b; }
+        .log-ticker { color: var(--accent-color); font-weight: bold; }
+        .log-status-SUCCESS { color: var(--success-color); }
+        .log-status-ERROR { color: var(--danger-color); }
+        .log-status-PROCESSING { color: var(--warning-color); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>FinBase FDAAE Dashboard</h1>
+            <div id="connection-status" class="badge badge-pending">Connecting SSE...</div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>Watchlist Management</h2>
+                <form id="watchlist-form" class="form-group">
+                    <input type="text" id="ticker-input" placeholder="Ticker (e.g. AAPL)" required style="flex: 2;">
+                    <input type="number" id="priority-input" placeholder="Priority" value="10" required style="flex: 1;">
+                    <button type="submit">Add</button>
+                </form>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th>Priority</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="watchlist-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>Company Detail & Live Stream</h2>
+                <div id="company-detail" style="margin-bottom: 20px;">
+                    <p style="color: #94a3b8;">Select a ticker from the watchlist or wait for SSE updates.</p>
+                </div>
+
+                <h2>Live Worker Event Logs</h2>
+                <div id="log-stream"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const watchlistBody = document.getElementById('watchlist-body');
+        const companyDetail = document.getElementById('company-detail');
+        const logStream = document.getElementById('log-stream');
+        const watchlistForm = document.getElementById('watchlist-form');
+        const connectionStatus = document.getElementById('connection-status');
+
+        // Fetch initial watchlist
+        async function fetchWatchlist() {
+            try {
+                const res = await fetch('/api/watchlist');
+                const data = await res.json();
+                renderWatchlist(data || []);
+            } catch (err) {
+                console.error('Failed to fetch watchlist:', err);
+            }
+        }
+
+        function renderWatchlist(list) {
+            watchlistBody.innerHTML = '';
+            list.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong style="cursor:pointer; color:var(--accent-color);" onclick="loadCompany('${item.ticker}')">${item.ticker}</strong></td>
+                    <td>${item.priority}</td>
+                    <td><span class="badge badge-${item.status}">${item.status}</span></td>
+                    <td>
+                        <button class="btn-sm btn-danger" onclick="deleteTicker('${item.ticker}')">Delete</button>
+                    </td>
+                `;
+                watchlistBody.appendChild(tr);
+            });
+        }
+
+        async function loadCompany(ticker) {
+            try {
+                const res = await fetch(`/api/data/company/${ticker}`);
+                const data = await res.json();
+                renderCompanyDetail(data);
+            } catch (err) {
+                console.error('Failed to load company detail:', err);
+            }
+        }
+
+        function renderCompanyDetail(data) {
+            const comp = data.company || {};
+            const market = data.market_data || [];
+            const fund = data.fundamentals || [];
+
+            let html = `
+                <h3>${comp.name || comp.ticker} (${comp.ticker})</h3>
+                <p><strong>CIK:</strong> ${comp.cik || 'N/A'} | <strong>Sector:</strong> ${comp.sector || 'N/A'}</p>
+            `;
+
+            if (market.length > 0) {
+                html += `<h4>Latest Price: $${market[0].current_price.toFixed(2)}</h4>`;
+            }
+
+            if (fund.length > 0) {
+                html += `<h4>Fundamentals</h4><ul>`;
+                fund.forEach(f => {
+                    html += `<li>${f.period} - ${f.metric_name}: ${f.value}</li>`;
+                });
+                html += `</ul>`;
+            }
+
+            companyDetail.innerHTML = html;
+        }
+
+        watchlistForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const ticker = document.getElementById('ticker-input').value.trim().toUpperCase();
+            const priority = parseInt(document.getElementById('priority-input').value, 10);
+
+            if (!ticker) return;
+
+            try {
+                await fetch('/api/watchlist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker, priority })
+                });
+                document.getElementById('ticker-input').value = '';
+                fetchWatchlist();
+            } catch (err) {
+                console.error('Failed to add ticker:', err);
+            }
+        });
+
+        async function deleteTicker(ticker) {
+            try {
+                await fetch(`/api/watchlist?ticker=${ticker}`, { method: 'DELETE' });
+                fetchWatchlist();
+            } catch (err) {
+                console.error('Failed to delete ticker:', err);
+            }
+        }
+
+        // Setup SSE Connection
+        function setupSSE() {
+            const evtSource = new EventSource('/api/sse');
+
+            evtSource.onopen = () => {
+                connectionStatus.textContent = 'SSE Connected';
+                connectionStatus.className = 'badge badge-completed';
+            };
+
+            evtSource.onerror = (err) => {
+                connectionStatus.textContent = 'SSE Disconnected';
+                connectionStatus.className = 'badge badge-error';
+            };
+
+            evtSource.addEventListener('log', (e) => {
+                const log = JSON.parse(e.data);
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerHTML = `
+                    <span class="log-time">[${new Date(log.timestamp).toLocaleTimeString()}]</span>
+                    <span class="log-ticker">[${log.ticker}]</span>
+                    <span class="log-status-${log.status}">[${log.status}]</span> ${log.message}
+                `;
+                logStream.appendChild(entry);
+                logStream.scrollTop = logStream.scrollHeight;
+                fetchWatchlist();
+            });
+
+            evtSource.addEventListener('company_update', (e) => {
+                const update = JSON.parse(e.data);
+                if (update.company && update.company.ticker) {
+                    renderCompanyDetail(update);
+                }
+            });
+        }
+
+        fetchWatchlist();
+        setupSSE();
+    </script>
+</body>
+</html>

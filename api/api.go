@@ -1,0 +1,248 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"finbase/db"
+	"finbase/web"
+)
+
+// SSEEvent represents a Server-Sent Event payload.
+type SSEEvent struct {
+	Event string `json:"event"`
+	Data  any    `json:"data"`
+}
+
+type SSELogMessage struct {
+	Timestamp time.Time `json:"timestamp"`
+	Ticker    string    `json:"ticker"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message"`
+}
+
+// SSEBroker handles client subscriptions and broadcasting SSE events.
+type SSEBroker struct {
+	clients    map[chan SSEEvent]bool
+	newClients chan chan SSEEvent
+	defClients chan chan SSEEvent
+	broadcast  chan SSEEvent
+	mu         sync.Mutex
+}
+
+func NewSSEBroker() *SSEBroker {
+	broker := &SSEBroker{
+		clients:    make(map[chan SSEEvent]bool),
+		newClients: make(chan chan SSEEvent),
+		defClients: make(chan chan SSEEvent),
+		broadcast:  make(chan SSEEvent, 100),
+	}
+	go broker.listen()
+	return broker
+}
+
+func (b *SSEBroker) listen() {
+	for {
+		select {
+		case s := <-b.newClients:
+			b.mu.Lock()
+			b.clients[s] = true
+			b.mu.Unlock()
+		case s := <-b.defClients:
+			b.mu.Lock()
+			if _, ok := b.clients[s]; ok {
+				delete(b.clients, s)
+				close(s)
+			}
+			b.mu.Unlock()
+		case event := <-b.broadcast:
+			b.mu.Lock()
+			for clientMessageChan := range b.clients {
+				select {
+				case clientMessageChan <- event:
+				default:
+					// Drop if slow client buffer full
+				}
+			}
+			b.mu.Unlock()
+		}
+	}
+}
+
+func (b *SSEBroker) BroadcastLog(ticker, status, message string) {
+	b.broadcast <- SSEEvent{
+		Event: "log",
+		Data: SSELogMessage{
+			Timestamp: time.Now(),
+			Ticker:    ticker,
+			Status:    status,
+			Message:   message,
+		},
+	}
+}
+
+func (b *SSEBroker) BroadcastUpdate(ticker string, data any) {
+	b.broadcast <- SSEEvent{
+		Event: "company_update",
+		Data:  data,
+	}
+}
+
+func (b *SSEBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported!", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	messageChan := make(chan SSEEvent, 10)
+	b.newClients <- messageChan
+
+	defer func() {
+		b.defClients <- messageChan
+	}()
+
+	ctx := r.Context()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-messageChan:
+			if !ok {
+				return
+			}
+			dataJSON, err := json.Marshal(event.Data)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Event, string(dataJSON))
+			flusher.Flush()
+		}
+	}
+}
+
+// Server holds API router dependencies
+type Server struct {
+	db     *db.DB
+	broker *SSEBroker
+	mux    *http.ServeMux
+}
+
+func NewServer(database *db.DB, broker *SSEBroker) *Server {
+	s := &Server{
+		db:     database,
+		broker: broker,
+		mux:    http.NewServeMux(),
+	}
+	s.routes()
+	return s
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) routes() {
+	// API routes
+	s.mux.HandleFunc("/api/watchlist", s.handleWatchlist)
+	s.mux.HandleFunc("/api/data/company/", s.handleCompanyData)
+	s.mux.Handle("/api/sse", s.broker)
+
+	// Embedded static web dashboard
+	fileServer := http.FileServer(http.FS(web.Content))
+	s.mux.Handle("/", fileServer)
+}
+
+func (s *Server) handleWatchlist(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		list, err := s.db.GetWatchlist(r.Context())
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(list)
+
+	case http.MethodPost:
+		var req struct {
+			Ticker   string `json:"ticker"`
+			Priority int    `json:"priority"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Ticker == "" {
+			http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+			return
+		}
+		item, err := s.db.AddWatchitem(r.Context(), req.Ticker, req.Priority)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(item)
+
+	case http.MethodPut:
+		var req struct {
+			Ticker   string `json:"ticker"`
+			Priority int    `json:"priority"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Ticker == "" {
+			http.Error(w, `{"error":"invalid request payload"}`, http.StatusBadRequest)
+			return
+		}
+		if err := s.db.UpdateWatchitemPriority(r.Context(), req.Ticker, req.Priority); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+
+	case http.MethodDelete:
+		ticker := r.URL.Query().Get("ticker")
+		if ticker == "" {
+			http.Error(w, `{"error":"ticker parameter required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := s.db.DeleteWatchitem(r.Context(), ticker); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleCompanyData(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	ticker := r.URL.Path[len("/api/data/company/"):]
+	if ticker == "" {
+		http.Error(w, `{"error":"ticker required"}`, http.StatusBadRequest)
+		return
+	}
+
+	data, err := s.db.GetConsolidatedData(r.Context(), ticker)
+	if err != nil {
+		log.Printf("Error fetching company data: %v", err)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(data)
+}
