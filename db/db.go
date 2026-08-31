@@ -90,9 +90,9 @@ func NewDB(dbPath string) (*DB, error) {
 
 	dsn := dbPath
 	if dbPath == ":memory:" {
-		dsn = "file:memdb1?mode=memory&cache=shared&_pragma=foreign_keys(ON)"
+		dsn = "file:memdb1?mode=memory&cache=shared&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 	} else {
-		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)", dbPath)
+		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", dbPath)
 	}
 
 	// Initialize Read Pool: SetMaxOpenConns(100)
@@ -297,7 +297,7 @@ func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*W
 func (db *DB) UpdateWatchitemPriority(ctx context.Context, ticker string, priority int) error {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	return db.WithTx(ctx, func(exec Execer) error {
-		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET priority = ? WHERE ticker = ?", priority, ticker)
+		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET priority = ?, status = 'pending', last_updated = CURRENT_TIMESTAMP WHERE ticker = ?", priority, ticker)
 		return err
 	})
 }
@@ -308,6 +308,34 @@ func (db *DB) DeleteWatchitem(ctx context.Context, ticker string) error {
 		_, err := exec.ExecContext(ctx, "DELETE FROM watchlist WHERE ticker = ?", ticker)
 		return err
 	})
+}
+
+func (db *DB) FetchNextWatchitem(ctx context.Context) (*Watchitem, error) {
+	var item Watchitem
+	var lastUpdatedStr string
+	// Select pending items first, or items not queued/processing whose last_updated is older than 5 minutes
+	query := `
+		SELECT id, ticker, priority, status, last_updated
+		FROM watchlist
+		WHERE status = 'pending'
+		   OR (status NOT IN ('queued', 'processing') AND last_updated <= datetime('now', '-5 minutes'))
+		ORDER BY (CASE WHEN status = 'pending' THEN 0 ELSE 1 END) ASC, priority DESC, last_updated ASC
+		LIMIT 1
+	`
+	err := db.ReadDB.QueryRowContext(ctx, query).Scan(
+		&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.LastUpdated, _ = time.Parse("2006-01-02 15:04:05", lastUpdatedStr)
+	if item.LastUpdated.IsZero() {
+		item.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+	}
+	return &item, nil
 }
 
 func (db *DB) FetchNextPendingWatchitem(ctx context.Context) (*Watchitem, error) {
@@ -323,6 +351,9 @@ func (db *DB) FetchNextPendingWatchitem(ctx context.Context) (*Watchitem, error)
 		return nil, err
 	}
 	item.LastUpdated, _ = time.Parse("2006-01-02 15:04:05", lastUpdatedStr)
+	if item.LastUpdated.IsZero() {
+		item.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+	}
 	return &item, nil
 }
 

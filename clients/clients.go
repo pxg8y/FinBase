@@ -437,7 +437,7 @@ func (cm *ClientManager) FetchSECCIKForTicker(ctx context.Context, ticker string
 		targetTicker := strings.ToUpper(ticker)
 		for _, entry := range tickersMap {
 			if strings.ToUpper(entry.Ticker) == targetTicker {
-				cik = strconv.Itoa(entry.CIK)
+				cik = FormatCIK(strconv.Itoa(entry.CIK))
 				return nil
 			}
 		}
