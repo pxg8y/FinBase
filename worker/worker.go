@@ -77,18 +77,14 @@ func (wp *WorkerPool) dispatcher(ctx context.Context) {
 		case <-wp.stopChan:
 			return
 		case <-ticker.C:
-			// Fetch highest priority, oldest updated watchitem
-			item, err := wp.db.FetchNextWatchitem(ctx)
+			// Atomically fetch highest priority, oldest updated watchitem and queue it
+			item, err := wp.db.FetchAndQueueNextWatchitem(ctx)
 			if err != nil {
 				log.Printf("[Dispatcher] Error fetching watchitem: %v", err)
 				continue
 			}
 			if item != nil {
 				oldStatus := item.Status
-				if err := wp.db.UpdateWatchitemStatus(ctx, item.Ticker, "queued"); err != nil {
-					log.Printf("[Dispatcher] Error updating status for ticker %s: %v", item.Ticker, err)
-					continue
-				}
 				select {
 				case wp.jobChan <- Job{Ticker: item.Ticker, Priority: item.Priority}:
 				default:
@@ -148,12 +144,15 @@ func (wp *WorkerPool) processJob(ctx context.Context, job Job) {
 		}
 	}
 
-	// 3. SEC CIK lookup
+	// 3. SEC CIK lookup with fallback to DB
 	secCIK, err := wp.clients.FetchSECCIKForTicker(ctx, tickerStr)
-	if err == nil {
+	if err == nil && secCIK != "" {
 		cik = clients.FormatCIK(secCIK)
-	} else if cik != "" {
-		cik = clients.FormatCIK(cik)
+	} else {
+		// Fallback: Check if CIK already exists in database for this ticker
+		if existing, err := wp.db.GetConsolidatedData(ctx, tickerStr); err == nil && existing != nil && existing.Company.CIK != "" {
+			cik = clients.FormatCIK(existing.Company.CIK)
+		}
 	}
 
 	// Upsert Company record in DB
@@ -224,7 +223,7 @@ func extractAndStoreSECFacts(ctx context.Context, database *db.DB, companyID int
 		"Assets":                                              "TotalAssets",
 	}
 
-	insertedCount := 0
+	var batch []db.FundamentalItem
 	for conceptKey, label := range metricsToExtract {
 		conceptData, ok := usGaap[conceptKey].(map[string]interface{})
 		if !ok {
@@ -264,11 +263,19 @@ func extractAndStoreSECFacts(ctx context.Context, database *db.DB, companyID int
 					period = fp
 				}
 
-				if err := database.InsertFundamental(ctx, companyID, period, label, val); err == nil {
-					insertedCount++
-				}
+				batch = append(batch, db.FundamentalItem{
+					Period:     period,
+					MetricName: label,
+					Value:      val,
+				})
 			}
 		}
 	}
-	return insertedCount
+
+	if len(batch) > 0 {
+		if err := database.InsertFundamentalsBatch(ctx, companyID, batch); err == nil {
+			return len(batch)
+		}
+	}
+	return 0
 }
