@@ -43,7 +43,7 @@ HEALTHY=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     # Assuming the API has a basic /api/watchlist or /ping endpoint
-    if curl -s http://localhost:$NEW_PORT/api/watchlist > /dev/null; then
+    if curl -sf http://localhost:$NEW_PORT/api/watchlist > /dev/null; then
         HEALTHY=true
         break
     fi

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -89,9 +90,9 @@ func NewDB(dbPath string) (*DB, error) {
 
 	dsn := dbPath
 	if dbPath == ":memory:" {
-		dsn = "file:memdb1?mode=memory&cache=shared"
+		dsn = "file:memdb1?mode=memory&cache=shared&_pragma=foreign_keys(ON)"
 	} else {
-		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
+		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)", dbPath)
 	}
 
 	// Initialize Read Pool: SetMaxOpenConns(100)
@@ -102,7 +103,7 @@ func NewDB(dbPath string) (*DB, error) {
 	readDB.SetMaxOpenConns(100)
 	readDB.SetMaxIdleConns(20)
 
-	if _, err := readDB.Exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;"); err != nil {
+	if _, err := readDB.Exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;"); err != nil {
 		readDB.Close()
 		return nil, fmt.Errorf("failed to set pragmas on read pool: %w", err)
 	}
@@ -116,7 +117,7 @@ func NewDB(dbPath string) (*DB, error) {
 	writeDB.SetMaxOpenConns(1)
 	writeDB.SetMaxIdleConns(1)
 
-	if _, err := writeDB.Exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;"); err != nil {
+	if _, err := writeDB.Exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;"); err != nil {
 		readDB.Close()
 		writeDB.Close()
 		return nil, fmt.Errorf("failed to set pragmas on write pool: %w", err)
@@ -259,10 +260,11 @@ func (db *DB) GetWatchlist(ctx context.Context) ([]Watchitem, error) {
 }
 
 func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*Watchitem, error) {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	var item Watchitem
 	err := db.WithTx(ctx, func(exec Execer) error {
 		res, err := exec.ExecContext(ctx,
-			"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', CURRENT_TIMESTAMP) ON CONFLICT(ticker) DO UPDATE SET priority=excluded.priority",
+			"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', CURRENT_TIMESTAMP) ON CONFLICT(ticker) DO UPDATE SET priority=excluded.priority, status='pending', last_updated=CURRENT_TIMESTAMP",
 			ticker, priority,
 		)
 		if err != nil {
@@ -293,6 +295,7 @@ func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*W
 }
 
 func (db *DB) UpdateWatchitemPriority(ctx context.Context, ticker string, priority int) error {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	return db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET priority = ? WHERE ticker = ?", priority, ticker)
 		return err
@@ -300,6 +303,7 @@ func (db *DB) UpdateWatchitemPriority(ctx context.Context, ticker string, priori
 }
 
 func (db *DB) DeleteWatchitem(ctx context.Context, ticker string) error {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	return db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, "DELETE FROM watchlist WHERE ticker = ?", ticker)
 		return err
@@ -323,6 +327,7 @@ func (db *DB) FetchNextPendingWatchitem(ctx context.Context) (*Watchitem, error)
 }
 
 func (db *DB) UpdateWatchitemStatus(ctx context.Context, ticker string, status string) error {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	return db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET status = ?, last_updated = CURRENT_TIMESTAMP WHERE ticker = ?", status, ticker)
 		return err
@@ -331,6 +336,7 @@ func (db *DB) UpdateWatchitemStatus(ctx context.Context, ticker string, status s
 
 // Company & Financial queries
 func (db *DB) UpsertCompany(ctx context.Context, comp *Company) (int64, error) {
+	comp.Ticker = strings.ToUpper(strings.TrimSpace(comp.Ticker))
 	var id int64
 	err := db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, `
@@ -367,6 +373,7 @@ func (db *DB) InsertFundamental(ctx context.Context, companyID int64, period, me
 }
 
 func (db *DB) LogAction(ctx context.Context, ticker, actionType, status, message string) error {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	return db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, "INSERT INTO action_history (ticker, action_type, status, message) VALUES (?, ?, ?, ?)", ticker, actionType, status, message)
 		return err
@@ -374,6 +381,7 @@ func (db *DB) LogAction(ctx context.Context, ticker, actionType, status, message
 }
 
 func (db *DB) GetConsolidatedData(ctx context.Context, ticker string) (*ConsolidatedCompanyData, error) {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	var data ConsolidatedCompanyData
 	var comp Company
 

@@ -84,10 +84,15 @@ func (wp *WorkerPool) dispatcher(ctx context.Context) {
 				continue
 			}
 			if item != nil {
+				if err := wp.db.UpdateWatchitemStatus(ctx, item.Ticker, "queued"); err != nil {
+					log.Printf("[Dispatcher] Error updating status for ticker %s: %v", item.Ticker, err)
+					continue
+				}
 				select {
 				case wp.jobChan <- Job{Ticker: item.Ticker, Priority: item.Priority}:
 				default:
-					// Job channel full, retry next tick
+					// Job channel full, revert status to pending
+					_ = wp.db.UpdateWatchitemStatus(ctx, item.Ticker, "pending")
 				}
 			}
 		}
@@ -180,8 +185,8 @@ func (wp *WorkerPool) processJob(ctx context.Context, job Job) {
 	if cik != "" {
 		facts, err := wp.clients.FetchSECFacts(ctx, cik)
 		if err == nil && facts != nil {
-			// Extract standard metrics if available
-			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_SEC_FACTS", "SUCCESS", fmt.Sprintf("Fetched XBRL facts for CIK %s", cik))
+			count := extractAndStoreSECFacts(ctx, wp.db, compID, facts)
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_SEC_FACTS", "SUCCESS", fmt.Sprintf("Fetched XBRL facts for CIK %s (%d metrics stored)", cik, count))
 		}
 	}
 
@@ -196,4 +201,71 @@ func (wp *WorkerPool) processJob(ctx context.Context, job Job) {
 			wp.broadcaster.BroadcastUpdate(tickerStr, consolidated)
 		}
 	}
+}
+
+func extractAndStoreSECFacts(ctx context.Context, database *db.DB, companyID int64, facts *clients.SECCompanyFacts) int {
+	if facts == nil || facts.Facts == nil {
+		return 0
+	}
+	usGaap, ok := facts.Facts["us-gaap"].(map[string]interface{})
+	if !ok {
+		return 0
+	}
+
+	metricsToExtract := map[string]string{
+		"Revenues":                                            "Revenues",
+		"SalesRevenueNet":                                     "Revenues",
+		"RevenueFromContractWithCustomerExcludingAssessedTax": "Revenues",
+		"NetIncomeLoss":                                       "NetIncome",
+		"OperatingIncomeLoss":                                 "OperatingIncome",
+		"Assets":                                              "TotalAssets",
+	}
+
+	insertedCount := 0
+	for conceptKey, label := range metricsToExtract {
+		conceptData, ok := usGaap[conceptKey].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		units, ok := conceptData["units"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, unitItems := range units {
+			itemList, ok := unitItems.([]interface{})
+			if !ok {
+				continue
+			}
+			startIdx := 0
+			if len(itemList) > 5 {
+				startIdx = len(itemList) - 5
+			}
+			for i := startIdx; i < len(itemList); i++ {
+				item, ok := itemList[i].(map[string]interface{})
+				if !ok {
+					continue
+				}
+				val, valOk := item["val"].(float64)
+				fy, fyOk := item["fy"].(float64)
+				fp, fpOk := item["fp"].(string)
+
+				if !valOk {
+					continue
+				}
+				period := "N/A"
+				if fyOk && fpOk {
+					period = fmt.Sprintf("%.0f-%s", fy, fp)
+				} else if fyOk {
+					period = fmt.Sprintf("%.0f", fy)
+				} else if fpOk {
+					period = fp
+				}
+
+				if err := database.InsertFundamental(ctx, companyID, period, label, val); err == nil {
+					insertedCount++
+				}
+			}
+		}
+	}
+	return insertedCount
 }

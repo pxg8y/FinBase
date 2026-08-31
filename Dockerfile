@@ -2,6 +2,8 @@
 # Stage 1: Build binary with CGO_ENABLED=0
 FROM golang:1.24-alpine AS builder
 
+RUN apk add --no-cache ca-certificates
+
 WORKDIR /app
 
 # Copy dependency files and download modules

@@ -3,6 +3,7 @@ package clients
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -130,5 +131,51 @@ func TestClientManagerMockAPIs(t *testing.T) {
 	}
 	if secFacts.EntityName != "Apple Inc." {
 		t.Errorf("Unexpected entity name: %s", secFacts.EntityName)
+	}
+}
+
+func TestCircuitBreaker(t *testing.T) {
+	cb := NewCircuitBreaker(2, 50*time.Millisecond)
+
+	if cb.State() != StateClosed {
+		t.Errorf("Expected initial state StateClosed, got %v", cb.State())
+	}
+
+	failErr := fmt.Errorf("api failure")
+
+	// First failure - still closed
+	_ = cb.Execute(func() error { return failErr })
+	if cb.State() != StateClosed {
+		t.Errorf("Expected StateClosed after 1 failure, got %v", cb.State())
+	}
+
+	// Second failure - trips to open
+	_ = cb.Execute(func() error { return failErr })
+	if cb.State() != StateOpen {
+		t.Errorf("Expected StateOpen after 2 failures, got %v", cb.State())
+	}
+
+	// Immediate call should fail with circuit breaker open error
+	err := cb.Execute(func() error { return nil })
+	if err == nil || err.Error() != "circuit breaker open" {
+		t.Errorf("Expected 'circuit breaker open' error, got %v", err)
+	}
+
+	// Wait for cooldown
+	time.Sleep(60 * time.Millisecond)
+
+	// Next call should transition to HalfOpen and execute function
+	executed := false
+	_ = cb.Execute(func() error {
+		executed = true
+		return nil
+	})
+
+	if !executed {
+		t.Errorf("Expected function to execute in half-open state")
+	}
+
+	if cb.State() != StateClosed {
+		t.Errorf("Expected StateClosed after successful half-open execution, got %v", cb.State())
 	}
 }
