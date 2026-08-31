@@ -28,20 +28,30 @@ type Watchitem struct {
 }
 
 type Company struct {
-	ID     int64  `json:"id"`
-	Ticker string `json:"ticker"`
-	CIK    string `json:"cik"`
-	ISIN   string `json:"isin"`
-	Name   string `json:"name"`
-	Sector string `json:"sector"`
+	ID                int64   `json:"id"`
+	Ticker            string  `json:"ticker"`
+	CIK               string  `json:"cik"`
+	ISIN              string  `json:"isin"`
+	Name              string  `json:"name"`
+	Sector            string  `json:"sector"`
+	Exchange          string  `json:"exchange"`
+	OutstandingShares float64 `json:"outstanding_shares"`
+	LogoURL           string  `json:"logo_url"`
 }
 
 type MarketData struct {
-	ID           int64     `json:"id"`
-	CompanyID    int64     `json:"company_id"`
-	Timestamp    time.Time `json:"timestamp"`
-	CurrentPrice float64   `json:"current_price"`
-	Volume       int64     `json:"volume"`
+	ID                int64     `json:"id"`
+	CompanyID         int64     `json:"company_id"`
+	Timestamp         time.Time `json:"timestamp"`
+	CurrentPrice      float64   `json:"current_price"`
+	Volume            int64     `json:"volume"`
+	OpenPrice         float64   `json:"open_price"`
+	HighPrice         float64   `json:"high_price"`
+	LowPrice          float64   `json:"low_price"`
+	PreviousClose     float64   `json:"previous_close"`
+	MarketCap         float64   `json:"market_cap"`
+	FiftyTwoWeekHigh  float64   `json:"fifty_two_week_high"`
+	FiftyTwoWeekLow   float64   `json:"fifty_two_week_low"`
 }
 
 type Fundamental struct {
@@ -199,7 +209,10 @@ func (db *DB) Migrate() error {
 		cik TEXT,
 		isin TEXT,
 		name TEXT,
-		sector TEXT
+		sector TEXT,
+		exchange TEXT,
+		outstanding_shares REAL DEFAULT 0,
+		logo_url TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS market_data (
@@ -208,6 +221,13 @@ func (db *DB) Migrate() error {
 		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 		current_price REAL NOT NULL,
 		volume INTEGER NOT NULL,
+		open_price REAL DEFAULT 0,
+		high_price REAL DEFAULT 0,
+		low_price REAL DEFAULT 0,
+		previous_close REAL DEFAULT 0,
+		market_cap REAL DEFAULT 0,
+		fifty_two_week_high REAL DEFAULT 0,
+		fifty_two_week_low REAL DEFAULT 0,
 		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
 	);
 
@@ -230,8 +250,34 @@ func (db *DB) Migrate() error {
 	);
 	`
 	return db.WithTx(context.Background(), func(exec Execer) error {
-		_, err := exec.ExecContext(context.Background(), schema)
-		return err
+		if _, err := exec.ExecContext(context.Background(), schema); err != nil {
+			return err
+		}
+
+		// Migrations for existing tables if columns are missing
+		companyMigrations := []string{
+			"ALTER TABLE companies ADD COLUMN exchange TEXT",
+			"ALTER TABLE companies ADD COLUMN outstanding_shares REAL DEFAULT 0",
+			"ALTER TABLE companies ADD COLUMN logo_url TEXT",
+		}
+		for _, stmt := range companyMigrations {
+			_, _ = exec.ExecContext(context.Background(), stmt)
+		}
+
+		marketDataMigrations := []string{
+			"ALTER TABLE market_data ADD COLUMN open_price REAL DEFAULT 0",
+			"ALTER TABLE market_data ADD COLUMN high_price REAL DEFAULT 0",
+			"ALTER TABLE market_data ADD COLUMN low_price REAL DEFAULT 0",
+			"ALTER TABLE market_data ADD COLUMN previous_close REAL DEFAULT 0",
+			"ALTER TABLE market_data ADD COLUMN market_cap REAL DEFAULT 0",
+			"ALTER TABLE market_data ADD COLUMN fifty_two_week_high REAL DEFAULT 0",
+			"ALTER TABLE market_data ADD COLUMN fifty_two_week_low REAL DEFAULT 0",
+		}
+		for _, stmt := range marketDataMigrations {
+			_, _ = exec.ExecContext(context.Background(), stmt)
+		}
+
+		return nil
 	})
 }
 
@@ -431,14 +477,17 @@ func (db *DB) UpsertCompany(ctx context.Context, comp *Company) (int64, error) {
 	var id int64
 	err := db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, `
-			INSERT INTO companies (ticker, cik, isin, name, sector)
-			VALUES (?, ?, ?, ?, ?)
+			INSERT INTO companies (ticker, cik, isin, name, sector, exchange, outstanding_shares, logo_url)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(ticker) DO UPDATE SET
 				cik = COALESCE(NULLIF(excluded.cik, ''), companies.cik),
 				isin = COALESCE(NULLIF(excluded.isin, ''), companies.isin),
 				name = COALESCE(NULLIF(excluded.name, ''), companies.name),
-				sector = COALESCE(NULLIF(excluded.sector, ''), companies.sector)
-		`, comp.Ticker, comp.CIK, comp.ISIN, comp.Name, comp.Sector)
+				sector = COALESCE(NULLIF(excluded.sector, ''), companies.sector),
+				exchange = COALESCE(NULLIF(excluded.exchange, ''), companies.exchange),
+				outstanding_shares = CASE WHEN excluded.outstanding_shares > 0 THEN excluded.outstanding_shares ELSE companies.outstanding_shares END,
+				logo_url = COALESCE(NULLIF(excluded.logo_url, ''), companies.logo_url)
+		`, comp.Ticker, comp.CIK, comp.ISIN, comp.Name, comp.Sector, comp.Exchange, comp.OutstandingShares, comp.LogoURL)
 		if err != nil {
 			return err
 		}
@@ -449,9 +498,13 @@ func (db *DB) UpsertCompany(ctx context.Context, comp *Company) (int64, error) {
 	return id, err
 }
 
-func (db *DB) InsertMarketData(ctx context.Context, companyID int64, price float64, volume int64) error {
+func (db *DB) InsertMarketData(ctx context.Context, companyID int64, md *MarketData) error {
 	return db.WithTx(ctx, func(exec Execer) error {
-		_, err := exec.ExecContext(ctx, "INSERT INTO market_data (company_id, current_price, volume) VALUES (?, ?, ?)", companyID, price, volume)
+		_, err := exec.ExecContext(ctx, `
+			INSERT INTO market_data (
+				company_id, current_price, volume, open_price, high_price, low_price, previous_close, market_cap, fifty_two_week_high, fifty_two_week_low
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, companyID, md.CurrentPrice, md.Volume, md.OpenPrice, md.HighPrice, md.LowPrice, md.PreviousClose, md.MarketCap, md.FiftyTwoWeekHigh, md.FiftyTwoWeekLow)
 		return err
 	})
 }
@@ -476,8 +529,8 @@ func (db *DB) GetConsolidatedData(ctx context.Context, ticker string) (*Consolid
 	var data ConsolidatedCompanyData
 	var comp Company
 
-	err := db.ReadDB.QueryRowContext(ctx, "SELECT id, ticker, cik, isin, name, sector FROM companies WHERE ticker = ?", ticker).Scan(
-		&comp.ID, &comp.Ticker, &comp.CIK, &comp.ISIN, &comp.Name, &comp.Sector,
+	err := db.ReadDB.QueryRowContext(ctx, "SELECT id, ticker, cik, isin, name, sector, COALESCE(exchange, ''), COALESCE(outstanding_shares, 0), COALESCE(logo_url, '') FROM companies WHERE ticker = ?", ticker).Scan(
+		&comp.ID, &comp.Ticker, &comp.CIK, &comp.ISIN, &comp.Name, &comp.Sector, &comp.Exchange, &comp.OutstandingShares, &comp.LogoURL,
 	)
 	if err == sql.ErrNoRows {
 		// Return empty consolidated object with ticker set
@@ -500,13 +553,22 @@ func (db *DB) GetConsolidatedData(ctx context.Context, ticker string) (*Consolid
 
 	if comp.ID > 0 {
 		// Market data
-		mRows, err := db.ReadDB.QueryContext(ctx, "SELECT id, company_id, timestamp, current_price, volume FROM market_data WHERE company_id = ? ORDER BY timestamp DESC LIMIT 50", comp.ID)
+		mRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, timestamp, current_price, volume,
+			       COALESCE(open_price, 0), COALESCE(high_price, 0), COALESCE(low_price, 0), COALESCE(previous_close, 0),
+			       COALESCE(market_cap, 0), COALESCE(fifty_two_week_high, 0), COALESCE(fifty_two_week_low, 0)
+			FROM market_data WHERE company_id = ? ORDER BY timestamp DESC LIMIT 50
+		`, comp.ID)
 		if err == nil {
 			defer mRows.Close()
 			for mRows.Next() {
 				var m MarketData
 				var ts string
-				if err := mRows.Scan(&m.ID, &m.CompanyID, &ts, &m.CurrentPrice, &m.Volume); err == nil {
+				if err := mRows.Scan(
+					&m.ID, &m.CompanyID, &ts, &m.CurrentPrice, &m.Volume,
+					&m.OpenPrice, &m.HighPrice, &m.LowPrice, &m.PreviousClose,
+					&m.MarketCap, &m.FiftyTwoWeekHigh, &m.FiftyTwoWeekLow,
+				); err == nil {
 					m.Timestamp, _ = time.Parse("2006-01-02 15:04:05", ts)
 					data.MarketData = append(data.MarketData, m)
 				}

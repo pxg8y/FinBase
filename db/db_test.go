@@ -32,16 +32,29 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 
 	// Test Company and Data insertion
 	compID, err := database.UpsertCompany(ctx, &Company{
-		Ticker: "AAPL",
-		CIK:    "0000320193",
-		Name:   "Apple Inc.",
-		Sector: "Technology",
+		Ticker:            "AAPL",
+		CIK:               "0000320193",
+		Name:              "Apple Inc.",
+		Sector:            "Technology",
+		Exchange:          "NASDAQ",
+		OutstandingShares: 15000000000,
+		LogoURL:           "https://example.com/logo.png",
 	})
 	if err != nil {
 		t.Fatalf("Failed to upsert company: %v", err)
 	}
 
-	if err := database.InsertMarketData(ctx, compID, 150.25, 1000000); err != nil {
+	if err := database.InsertMarketData(ctx, compID, &MarketData{
+		CurrentPrice:     150.25,
+		Volume:           1000000,
+		OpenPrice:        149.00,
+		HighPrice:        151.00,
+		LowPrice:         148.50,
+		PreviousClose:    148.00,
+		MarketCap:        2253750000000,
+		FiftyTwoWeekHigh: 180.00,
+		FiftyTwoWeekLow:  120.00,
+	}); err != nil {
 		t.Fatalf("Failed to insert market data: %v", err)
 	}
 
@@ -74,10 +87,10 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 		t.Fatalf("Failed to get consolidated data: %v", err)
 	}
 
-	if data.Company.Name != "Apple Inc." {
-		t.Errorf("Expected company name Apple Inc., got %s", data.Company.Name)
+	if data.Company.Name != "Apple Inc." || data.Company.Exchange != "NASDAQ" || data.Company.OutstandingShares != 15000000000 || data.Company.LogoURL != "https://example.com/logo.png" {
+		t.Errorf("Unexpected company data: %+v", data.Company)
 	}
-	if len(data.MarketData) != 1 || data.MarketData[0].CurrentPrice != 150.25 {
+	if len(data.MarketData) != 1 || data.MarketData[0].CurrentPrice != 150.25 || data.MarketData[0].OpenPrice != 149.00 || data.MarketData[0].MarketCap != 2253750000000 {
 		t.Errorf("Unexpected market data: %+v", data.MarketData)
 	}
 	if len(data.Fundamentals) != 3 {
