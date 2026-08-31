@@ -100,3 +100,87 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 		t.Errorf("Unexpected action history: %+v", data.History)
 	}
 }
+
+func TestDBMigrate(t *testing.T) {
+	t.Run("Idempotency", func(t *testing.T) {
+		database, err := NewDB(":memory:")
+		if err != nil {
+			t.Fatalf("Failed to initialize memory DB: %v", err)
+		}
+		defer database.Close()
+
+		// Call Migrate explicitly multiple times
+		for i := 0; i < 3; i++ {
+			if err := database.Migrate(); err != nil {
+				t.Fatalf("Migrate() iteration %d failed: %v", i+1, err)
+			}
+		}
+
+		// Verify core tables exist
+		tables := []string{"watchlist", "companies", "market_data", "fundamentals", "action_history"}
+		for _, table := range tables {
+			var name string
+			err := database.ReadDB.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
+			if err != nil {
+				t.Errorf("Expected table %s to exist, query returned: %v", table, err)
+			}
+		}
+	})
+
+	t.Run("ColumnAdditionMigration", func(t *testing.T) {
+		// Test migration on a database with minimal table definitions (missing alter columns)
+		database, err := NewDB(":memory:")
+		if err != nil {
+			t.Fatalf("Failed to initialize memory DB: %v", err)
+		}
+		defer database.Close()
+
+		// Drop and re-create companies table with only old schema columns
+		_, err = database.WriteDB.Exec(`
+			DROP TABLE companies;
+			CREATE TABLE companies (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				ticker TEXT UNIQUE NOT NULL,
+				cik TEXT,
+				isin TEXT,
+				name TEXT,
+				sector TEXT
+			);
+		`)
+		if err != nil {
+			t.Fatalf("Failed to set up legacy companies table: %v", err)
+		}
+
+		// Run Migrate to execute column additions
+		if err := database.Migrate(); err != nil {
+			t.Fatalf("Migrate() failed on legacy table setup: %v", err)
+		}
+
+		// Check if added columns exist in companies table
+		rows, err := database.ReadDB.Query("PRAGMA table_info(companies)")
+		if err != nil {
+			t.Fatalf("Failed to query table_info for companies: %v", err)
+		}
+		defer rows.Close()
+
+		columns := make(map[string]bool)
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull int
+			var dfltValue interface{}
+			var pk int
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+				t.Fatalf("Failed scanning table_info row: %v", err)
+			}
+			columns[name] = true
+		}
+
+		expectedCols := []string{"exchange", "outstanding_shares", "logo_url"}
+		for _, col := range expectedCols {
+			if !columns[col] {
+				t.Errorf("Expected column %s to be added by Migrate(), but it was missing", col)
+			}
+		}
+	})
+}
