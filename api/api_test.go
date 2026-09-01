@@ -22,6 +22,14 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 	jwtSecret := []byte("test-jwt-secret-456")
 	server := NewServer(database, broker, apiKey, jwtSecret)
 
+	// Test unauthenticated GET /api/health (should succeed 200)
+	healthReq := httptest.NewRequest("GET", "/api/health", nil)
+	healthRec := httptest.NewRecorder()
+	server.ServeHTTP(healthRec, healthReq)
+	if healthRec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK for /api/health endpoint, got %d", healthRec.Code)
+	}
+
 	// Test unauthorized GET /api/watchlist (should fail 401)
 	req := httptest.NewRequest("GET", "/api/watchlist", nil)
 	rec := httptest.NewRecorder()

@@ -177,7 +177,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	// Public endpoint to issue short-lived JWT for dashboard
+	// Public endpoints
+	s.mux.HandleFunc("/api/health", s.handleHealth)
 	s.mux.HandleFunc("/api/auth/token", s.handleAuthToken)
 
 	// Protected API routes
@@ -193,6 +194,16 @@ func (s *Server) routes() {
 	// Embedded static web dashboard
 	fileServer := http.FileServer(http.FS(web.Content))
 	s.mux.Handle("/", fileServer)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
