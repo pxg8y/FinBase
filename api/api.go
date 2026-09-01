@@ -183,6 +183,7 @@ func (s *Server) routes() {
 	// Protected API routes
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/watchlist", s.handleWatchlist)
+	apiMux.HandleFunc("/api/watchlist/refresh", s.handleWatchlistRefresh)
 	apiMux.HandleFunc("/api/data/company/", s.handleCompanyData)
 	apiMux.HandleFunc("/api/status", s.handleStatus)
 	apiMux.Handle("/api/sse", s.broker)
@@ -271,6 +272,41 @@ func (s *Server) handleWatchlist(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleWatchlistRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var req struct {
+		Ticker string `json:"ticker"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if req.Ticker == "" {
+		req.Ticker = r.URL.Query().Get("ticker")
+	}
+
+	if req.Ticker != "" {
+		if err := s.db.SetWatchitemForceRefresh(r.Context(), req.Ticker, true); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		if err := s.db.UpdateWatchitemStatus(r.Context(), req.Ticker, "pending"); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "queued", "ticker": req.Ticker})
+	} else {
+		if err := s.db.SetWatchitemForceRefreshAll(r.Context(), true); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "queued", "message": "all watchlist items marked for force refresh"})
 	}
 }
 
