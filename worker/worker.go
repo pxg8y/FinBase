@@ -22,6 +22,19 @@ type Job struct {
 	Priority int
 }
 
+type ActiveJob struct {
+	WorkerID  int       `json:"worker_id"`
+	Ticker    string    `json:"ticker"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+type WorkerPoolStatus struct {
+	TotalWorkers int         `json:"total_workers"`
+	ActiveWorkers int        `json:"active_workers"`
+	QueueDepth   int         `json:"queue_depth"`
+	CurrentJobs  []ActiveJob `json:"current_jobs"`
+}
+
 type WorkerPool struct {
 	db          *db.DB
 	clients     *clients.ClientManager
@@ -31,6 +44,9 @@ type WorkerPool struct {
 	numWorkers int
 	stopChan   chan struct{}
 	wg         sync.WaitGroup
+
+	mu         sync.RWMutex
+	activeJobs map[int]ActiveJob
 }
 
 func NewWorkerPool(database *db.DB, clientMgr *clients.ClientManager, broadcaster SSEBroadcaster, numWorkers int) *WorkerPool {
@@ -47,6 +63,24 @@ func NewWorkerPool(database *db.DB, clientMgr *clients.ClientManager, broadcaste
 		jobChan:     make(chan Job, 100),
 		numWorkers:  numWorkers,
 		stopChan:    make(chan struct{}),
+		activeJobs:  make(map[int]ActiveJob),
+	}
+}
+
+func (wp *WorkerPool) GetStatus() WorkerPoolStatus {
+	wp.mu.RLock()
+	defer wp.mu.RUnlock()
+
+	currentJobs := make([]ActiveJob, 0, len(wp.activeJobs))
+	for _, aj := range wp.activeJobs {
+		currentJobs = append(currentJobs, aj)
+	}
+
+	return WorkerPoolStatus{
+		TotalWorkers:  wp.numWorkers,
+		ActiveWorkers: len(wp.activeJobs),
+		QueueDepth:    len(wp.jobChan),
+		CurrentJobs:   currentJobs,
 	}
 }
 
@@ -109,7 +143,19 @@ func (wp *WorkerPool) worker(ctx context.Context, id int) {
 			if !ok {
 				return
 			}
+			wp.mu.Lock()
+			wp.activeJobs[id] = ActiveJob{
+				WorkerID:  id,
+				Ticker:    job.Ticker,
+				StartedAt: time.Now(),
+			}
+			wp.mu.Unlock()
+
 			wp.processJob(ctx, job)
+
+			wp.mu.Lock()
+			delete(wp.activeJobs, id)
+			wp.mu.Unlock()
 		}
 	}
 }

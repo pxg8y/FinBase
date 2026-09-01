@@ -62,6 +62,9 @@ func main() {
 	}
 
 	server := api.NewServer(database, broker, apiKey, jwtSecret)
+	server.SetClientManager(clientMgr)
+	server.SetWorkerPool(wp)
+
 	httpServer := &http.Server{
 		Addr:    ":" + port,
 		Handler: server,
