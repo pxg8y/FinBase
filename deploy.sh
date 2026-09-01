@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export PATH="$PATH:/usr/local/go/bin:/go/bin"
+
 echo "🚀 Starting automated deployment..."
 
 # 1. Git Pull (force overwrite local changes unless SKIP_GIT_PULL is set)
