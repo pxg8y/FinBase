@@ -1,9 +1,113 @@
 #!/bin/bash
 set -e
 
-export PATH="$PATH:/usr/local/go/bin:/go/bin"
+export PATH="$PATH:/usr/local/go/bin:/go/bin:$HOME/go/bin"
 
 echo "🚀 Starting automated deployment..."
+
+# 0. Check and Install Prerequisites
+check_and_install_prereqs() {
+    echo "🔍 Checking prerequisites..."
+
+    # Check/install git, curl, ca-certificates if missing
+    local packages_to_install=()
+    if ! command -v git >/dev/null 2>&1; then
+        packages_to_install+=("git")
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        packages_to_install+=("curl")
+    fi
+    if [ ! -f /etc/ssl/certs/ca-certificates.crt ]; then
+        packages_to_install+=("ca-certificates")
+    fi
+
+    if [ ${#packages_to_install[@]} -ne 0 ]; then
+        echo "📦 Missing basic system tools: ${packages_to_install[*]}."
+        if command -v apt-get >/dev/null 2>&1; then
+            echo "   Installing via apt-get..."
+            sudo apt-get update -y || apt-get update -y
+            sudo apt-get install -y "${packages_to_install[@]}" || apt-get install -y "${packages_to_install[@]}"
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y "${packages_to_install[@]}" || yum install -y "${packages_to_install[@]}"
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y "${packages_to_install[@]}" || dnf install -y "${packages_to_install[@]}"
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache "${packages_to_install[@]}" || apk add --no-cache "${packages_to_install[@]}"
+        else
+            echo "❌ Package manager not found. Please install ${packages_to_install[*]} manually."
+            exit 1
+        fi
+    fi
+
+    # Check Docker
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "📦 Docker not found. Attempting to install Docker..."
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y || apt-get update -y
+            sudo apt-get install -y docker.io || apt-get install -y docker.io
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y docker || yum install -y docker
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y docker || dnf install -y docker
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker || apk add --no-cache docker
+        else
+            echo "❌ Package manager not found. Please install docker manually."
+            exit 1
+        fi
+    fi
+
+    # Ensure Docker service is running if systemctl or service is present
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl start docker 2>/dev/null || systemctl start docker 2>/dev/null || true
+    elif command -v service >/dev/null 2>&1; then
+        sudo service docker start 2>/dev/null || service docker start 2>/dev/null || true
+    fi
+
+    # Check Go
+    if ! command -v go >/dev/null 2>&1; then
+        echo "📦 Go not found. Attempting to install Go..."
+        GO_VERSION="1.22.5"
+        ARCH=$(uname -m)
+        case "$ARCH" in
+            x86_64) GO_ARCH="amd64" ;;
+            aarch64|arm64) GO_ARCH="arm64" ;;
+            armv7l) GO_ARCH="armv6l" ;;
+            *) GO_ARCH="amd64" ;;
+        esac
+
+        GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+        GO_URL="https://go.dev/dl/${GO_TAR}"
+
+        echo "   Downloading Go ${GO_VERSION} for ${GO_ARCH}..."
+        if curl -fsSL "$GO_URL" -o "/tmp/${GO_TAR}"; then
+            echo "   Extracting Go to /usr/local..."
+            if command -v sudo >/dev/null 2>&1; then
+                sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "/tmp/${GO_TAR}"
+            else
+                rm -rf /usr/local/go && tar -C /usr/local -xzf "/tmp/${GO_TAR}"
+            fi
+            rm -f "/tmp/${GO_TAR}"
+            export PATH="$PATH:/usr/local/go/bin"
+        elif command -v apt-get >/dev/null 2>&1; then
+            echo "   Falling back to apt-get golang-go..."
+            sudo apt-get update -y || apt-get update -y
+            sudo apt-get install -y golang-go || apt-get install -y golang-go
+        fi
+    fi
+
+    # Final verification of tools
+    for tool in git curl docker go; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "❌ Required tool '$tool' is still missing or not in PATH."
+            exit 1
+        fi
+    done
+
+    echo "✅ All prerequisites checked and verified!"
+}
+
+check_and_install_prereqs
 
 # 1. Git Pull (force overwrite local changes unless SKIP_GIT_PULL is set)
 echo "📦 Pulling latest changes from Git..."
