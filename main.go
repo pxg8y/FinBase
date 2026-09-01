@@ -52,7 +52,16 @@ func main() {
 
 	wp.Start(ctx)
 
-	server := api.NewServer(database, broker)
+	apiKey := os.Getenv("API_KEY")
+	jwtSecretStr := os.Getenv("JWT_SECRET")
+	var jwtSecret []byte
+	if jwtSecretStr != "" {
+		jwtSecret = []byte(jwtSecretStr)
+	} else {
+		jwtSecret = []byte("finbase-default-jwt-secret-change-in-production")
+	}
+
+	server := api.NewServer(database, broker, apiKey, jwtSecret)
 	httpServer := &http.Server{
 		Addr:    ":" + port,
 		Handler: server,

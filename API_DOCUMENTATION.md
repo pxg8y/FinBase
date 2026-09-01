@@ -9,6 +9,23 @@ All endpoints are relative to the root server URL (e.g., `http://localhost:8080`
 
 ---
 
+## Authentication
+All `/api/*` endpoints require authentication, except for `/api/auth/token` which issues dashboard session tokens.
+
+ Authentication can be provided via two mechanisms:
+ 1. **API Key Authentication** (External clients):
+    - Header: `X-API-Key: <YOUR_API_KEY>`
+    - Header: `Authorization: Bearer <YOUR_API_KEY>`
+    - Query Parameter: `?api_key=<YOUR_API_KEY>`
+ 2. **Short-lived JWT Authentication** (Web Dashboard / Browser):
+    - Token generation endpoint: `POST /api/auth/token` (returns a signed 15-minute JWT)
+    - Header: `Authorization: Bearer <JWT_TOKEN>`
+    - Query Parameter: `?token=<JWT_TOKEN>` (used for Server-Sent Events `/api/sse`)
+
+If no valid authentication is provided, API endpoints respond with `401 Unauthorized`.
+
+---
+
 ## Error Handling
 All error responses return a standard JSON object containing an `error` message string:
 ```json

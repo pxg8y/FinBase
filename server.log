@@ -1,0 +1,8 @@
+2026/09/01 09:45:19 Initializing FinBase FDAAE Engine...
+2026/09/01 09:45:19 Server listening on port 8080
+2026/09/01 09:45:51 [Worker] Starting processing for ticker AAPL
+2026/09/01 09:45:52 [Worker] Error fetching market data waterfall for AAPL: all market data fetchers failed for AAPL: [Finnhub: finnhub quote HTTP status 401: {"error":"Please use an API key."}; Tiingo: tiingo HTTP status 403: {"detail":"Please supply a token"}; Twelve Data: twelve data HTTP status 401: {"code":401,"message":"**apikey** parameter is incorrect or not specified. You can get your free API key instantly following this link: https://twelvedata.com/pricing. If you believe that everything is correct, you can contact us at https://twelvedata.com/contact/customer","status":"error"}]
+2026/09/01 09:45:53 [Worker] Error fetching valuation ratios for AAPL: finnhub metric HTTP status 401: {"error":"Please use an API key."}
+2026/09/01 09:45:53 [Worker] Error fetching historical prices for AAPL: tiingo historical HTTP status 403: {"detail":"Please supply a token"}
+2026/09/01 09:46:03 Shutting down FinBase server...
+FinBase server stopped gracefully.

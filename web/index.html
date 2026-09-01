@@ -209,10 +209,48 @@
         const watchlistForm = document.getElementById('watchlist-form');
         const connectionStatus = document.getElementById('connection-status');
 
+        let jwtToken = null;
+        let sseSource = null;
+
+        async function getOrRefreshToken() {
+            try {
+                const res = await fetch('/api/auth/token', { method: 'POST' });
+                if (!res.ok) throw new Error('Token generation failed');
+                const data = await res.json();
+                jwtToken = data.token;
+                // Refresh token 1 minute before expiry (14 minutes)
+                setTimeout(getOrRefreshToken, 14 * 60 * 1000);
+                return jwtToken;
+            } catch (err) {
+                console.error('Failed to obtain JWT token:', err);
+                return null;
+            }
+        }
+
+        async function fetchWithAuth(url, options = {}) {
+            if (!jwtToken) {
+                await getOrRefreshToken();
+            }
+            options.headers = options.headers || {};
+            if (jwtToken) {
+                options.headers['Authorization'] = `Bearer ${jwtToken}`;
+            }
+            let res = await fetch(url, options);
+            if (res.status === 401) {
+                // Retry once with new token
+                await getOrRefreshToken();
+                if (jwtToken) {
+                    options.headers['Authorization'] = `Bearer ${jwtToken}`;
+                    res = await fetch(url, options);
+                }
+            }
+            return res;
+        }
+
         // Fetch initial watchlist
         async function fetchWatchlist() {
             try {
-                const res = await fetch('/api/watchlist');
+                const res = await fetchWithAuth('/api/watchlist');
                 const data = await res.json();
                 renderWatchlist(data || []);
             } catch (err) {
@@ -238,7 +276,7 @@
 
         async function loadCompany(ticker) {
             try {
-                const res = await fetch(`/api/data/company/${ticker}`);
+                const res = await fetchWithAuth(`/api/data/company/${ticker}`);
                 const data = await res.json();
                 renderCompanyDetail(data);
             } catch (err) {
@@ -279,7 +317,7 @@
             if (!ticker) return;
 
             try {
-                await fetch('/api/watchlist', {
+                await fetchWithAuth('/api/watchlist', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticker, priority })
@@ -293,28 +331,34 @@
 
         async function deleteTicker(ticker) {
             try {
-                await fetch(`/api/watchlist?ticker=${ticker}`, { method: 'DELETE' });
+                await fetchWithAuth(`/api/watchlist?ticker=${ticker}`, { method: 'DELETE' });
                 fetchWatchlist();
             } catch (err) {
                 console.error('Failed to delete ticker:', err);
             }
         }
 
-        // Setup SSE Connection
-        function setupSSE() {
-            const evtSource = new EventSource('/api/sse');
+        // Setup SSE Connection with JWT query parameter
+        async function setupSSE() {
+            if (!jwtToken) {
+                await getOrRefreshToken();
+            }
+            if (sseSource) {
+                sseSource.close();
+            }
+            sseSource = new EventSource(`/api/sse?token=${encodeURIComponent(jwtToken)}`);
 
-            evtSource.onopen = () => {
+            sseSource.onopen = () => {
                 connectionStatus.textContent = 'SSE Connected';
                 connectionStatus.className = 'badge badge-completed';
             };
 
-            evtSource.onerror = (err) => {
+            sseSource.onerror = (err) => {
                 connectionStatus.textContent = 'SSE Disconnected';
                 connectionStatus.className = 'badge badge-error';
             };
 
-            evtSource.addEventListener('log', (e) => {
+            sseSource.addEventListener('log', (e) => {
                 const log = JSON.parse(e.data);
                 const entry = document.createElement('div');
                 entry.className = 'log-entry';
@@ -328,7 +372,7 @@
                 fetchWatchlist();
             });
 
-            evtSource.addEventListener('company_update', (e) => {
+            sseSource.addEventListener('company_update', (e) => {
                 const update = JSON.parse(e.data);
                 if (update.company && update.company.ticker) {
                     renderCompanyDetail(update);
@@ -336,8 +380,13 @@
             });
         }
 
-        fetchWatchlist();
-        setupSSE();
+        async function init() {
+            await getOrRefreshToken();
+            await fetchWatchlist();
+            setupSSE();
+        }
+
+        init();
     </script>
 </body>
 </html>
