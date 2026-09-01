@@ -114,6 +114,7 @@ type ClientManager struct {
 	tiingoLimiter     *rate.Limiter     // 500 requests per hour (~1 req/7s, with burst capacity)
 	twelveDataLimiter ratelimit.Limiter // 8 requests per minute
 	fmpLimiter        *rate.Limiter     // 250 requests per day (~1 req/350s, with burst capacity)
+	fredLimiter       *rate.Limiter     // 120 requests per minute (~2 req/sec with burst)
 
 	openFIGICB    *CircuitBreaker
 	secCB         *CircuitBreaker
@@ -121,6 +122,7 @@ type ClientManager struct {
 	tiingoCB      *CircuitBreaker
 	twelveDataCB  *CircuitBreaker
 	fmpCB         *CircuitBreaker
+	fredCB        *CircuitBreaker
 
 	secUserAgent     string
 	finnhubAPIKey    string
@@ -128,6 +130,7 @@ type ClientManager struct {
 	tiingoAPIKey     string
 	twelveDataAPIKey string
 	fmpAPIKey        string
+	fredAPIKey       string
 }
 
 func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey, twelveDataAPIKey, fmpAPIKey string) *ClientManager {
@@ -144,6 +147,7 @@ func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey,
 		tiingoLimiter:     rate.NewLimiter(rate.Every(100*time.Millisecond), 5),
 		twelveDataLimiter: ratelimit.New(8, ratelimit.Per(60*time.Second)),
 		fmpLimiter:        rate.NewLimiter(rate.Every(100*time.Millisecond), 5),
+		fredLimiter:       rate.NewLimiter(rate.Every(500*time.Millisecond), 5),
 
 		openFIGICB:   NewCircuitBreaker(5, 30*time.Second),
 		secCB:        NewCircuitBreaker(5, 30*time.Second),
@@ -151,6 +155,7 @@ func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey,
 		tiingoCB:     NewCircuitBreaker(5, 30*time.Second),
 		twelveDataCB: NewCircuitBreaker(5, 30*time.Second),
 		fmpCB:        NewCircuitBreaker(5, 30*time.Second),
+		fredCB:       NewCircuitBreaker(5, 30*time.Second),
 
 		secUserAgent:     secUserAgent,
 		finnhubAPIKey:    finnhubAPIKey,
@@ -159,6 +164,10 @@ func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey,
 		twelveDataAPIKey: twelveDataAPIKey,
 		fmpAPIKey:        fmpAPIKey,
 	}
+}
+
+func (cm *ClientManager) SetFREDAPIKey(key string) {
+	cm.fredAPIKey = key
 }
 
 // Structs for OpenFIGI API
@@ -328,6 +337,84 @@ type FinnhubProfile struct {
 	Logo                 string  `json:"logo"`
 }
 
+type DividendItem struct {
+	ExDate      string  `json:"ex_date"`
+	PaymentDate string  `json:"payment_date"`
+	RecordDate  string  `json:"record_date"`
+	Amount      float64 `json:"amount"`
+	Currency    string  `json:"currency"`
+	Frequency   int     `json:"frequency"`
+}
+
+type StockSplitItem struct {
+	ExecutionDate string  `json:"execution_date"`
+	FromFactor    float64 `json:"from_factor"`
+	ToFactor      float64 `json:"to_factor"`
+}
+
+type HistoricalPriceItem struct {
+	Date          string  `json:"date"`
+	OpenPrice     float64 `json:"open_price"`
+	HighPrice     float64 `json:"high_price"`
+	LowPrice      float64 `json:"low_price"`
+	ClosePrice    float64 `json:"close_price"`
+	AdjClosePrice float64 `json:"adj_close_price"`
+	Volume        int64   `json:"volume"`
+}
+
+type AnalystEstimateItem struct {
+	Period     string `json:"period"`
+	StrongBuy  int    `json:"strong_buy"`
+	Buy        int    `json:"buy"`
+	Hold       int    `json:"hold"`
+	Sell       int    `json:"sell"`
+	StrongSell int    `json:"strong_sell"`
+}
+
+type EarningsCalendarItem struct {
+	Date            string  `json:"date"`
+	Quarter         int     `json:"quarter"`
+	Year            int     `json:"year"`
+	EPSEstimate     float64 `json:"eps_estimate"`
+	EPSActual       float64 `json:"eps_actual"`
+	RevenueEstimate float64 `json:"revenue_estimate"`
+	RevenueActual   float64 `json:"revenue_actual"`
+}
+
+type CompanyNewsItem struct {
+	NewsID         int64     `json:"news_id"`
+	Headline       string    `json:"headline"`
+	Summary        string    `json:"summary"`
+	Source         string    `json:"source"`
+	URL            string    `json:"url"`
+	PublishedAt    time.Time `json:"published_at"`
+	SentimentScore float64   `json:"sentiment_score"`
+}
+
+type InsiderTransactionItem struct {
+	Name             string  `json:"name"`
+	ShareCount       float64 `json:"share_count"`
+	ChangeShares     float64 `json:"change_shares"`
+	FilingDate       string  `json:"filing_date"`
+	TransactionCode  string  `json:"transaction_code"`
+	TransactionPrice float64 `json:"transaction_price"`
+}
+
+type InstitutionalOwnershipItem struct {
+	InvestorName string  `json:"investor_name"`
+	SharesHeld   float64 `json:"shares_held"`
+	ChangeShares float64 `json:"change_shares"`
+	Value        float64 `json:"value"`
+	Period       string  `json:"period"`
+}
+
+type MacroIndicatorItem struct {
+	SeriesID      string  `json:"series_id"`
+	IndicatorName string  `json:"indicator_name"`
+	Date          string  `json:"date"`
+	Value         float64 `json:"value"`
+}
+
 type FinnhubQuote struct {
 	CurrentPrice       float64 `json:"c"`
 	Change             float64 `json:"d"`
@@ -337,6 +424,89 @@ type FinnhubQuote struct {
 	OpenPriceOfDay     float64 `json:"o"`
 	PreviousClosePrice float64 `json:"pc"`
 	Timestamp          int64   `json:"t"`
+}
+
+type FinnhubValuationRatios struct {
+	PERatio         float64
+	PBRatio         float64
+	PSRatio         float64
+	GrossMargin     float64
+	OperatingMargin float64
+	NetMargin       float64
+	ROE             float64
+	ROA             float64
+	DebtToEquity    float64
+}
+
+func (cm *ClientManager) FetchFinnhubValuationRatios(ctx context.Context, ticker string) (*FinnhubValuationRatios, error) {
+	var ratios *FinnhubValuationRatios
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/metric?symbol=%s&metric=all", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub metric create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub metric http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub metric HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub metric read body error: %w", err)
+		}
+
+		var payload struct {
+			Metric map[string]interface{} `json:"metric"`
+		}
+		if err := json.NewDecoder(buf).Decode(&payload); err != nil {
+			return fmt.Errorf("finnhub metric decode error: %w", err)
+		}
+
+		getFloat := func(m map[string]interface{}, keys ...string) float64 {
+			for _, k := range keys {
+				if val, ok := m[k]; ok && val != nil {
+					if f, ok := val.(float64); ok {
+						return f
+					}
+				}
+			}
+			return 0
+		}
+
+		m := payload.Metric
+		ratios = &FinnhubValuationRatios{
+			PERatio:         getFloat(m, "peNormalizedAnnual", "peBasicExclExtraTTM", "peTTM"),
+			PBRatio:         getFloat(m, "pbAnnual", "pbQuarterly"),
+			PSRatio:         getFloat(m, "psAnnual", "psTTM"),
+			GrossMargin:     getFloat(m, "grossMarginAnnual", "grossMarginTTM"),
+			OperatingMargin: getFloat(m, "operatingMarginAnnual", "operatingMarginTTM"),
+			NetMargin:       getFloat(m, "netProfitMarginAnnual", "netProfitMarginTTM"),
+			ROE:             getFloat(m, "roeTTM", "roeRpt"),
+			ROA:             getFloat(m, "roaTTM", "roaRpt"),
+			DebtToEquity:    getFloat(m, "totalDebt/totalEquityAnnual", "totalDebt/totalEquityQuarterly"),
+		}
+		return nil
+	})
+	return ratios, err
 }
 
 func (cm *ClientManager) FetchFinnhubQuote(ctx context.Context, ticker string) (*FinnhubQuote, error) {
@@ -414,6 +584,612 @@ type TiingoPrice struct {
 	Open     float64 `json:"open"`
 	Volume   int64   `json:"volume"`
 	AdjClose float64 `json:"adjClose"`
+}
+
+func (cm *ClientManager) FetchFinnhubDividends(ctx context.Context, ticker string) ([]DividendItem, error) {
+	var divs []DividendItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/dividend?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub dividend create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub dividend http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub dividend HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub dividend read body error: %w", err)
+		}
+
+		var rawList []struct {
+			Date       string  `json:"date"`
+			PayDate    string  `json:"payDate"`
+			RecordDate string  `json:"recordDate"`
+			Amount     float64 `json:"amount"`
+			Currency   string  `json:"currency"`
+			Frequency  int     `json:"freq"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&rawList); err != nil {
+			return fmt.Errorf("finnhub dividend decode error: %w", err)
+		}
+
+		for _, item := range rawList {
+			if item.Amount > 0 {
+				curr := item.Currency
+				if curr == "" {
+					curr = "USD"
+				}
+				divs = append(divs, DividendItem{
+					ExDate:      item.Date,
+					PaymentDate: item.PayDate,
+					RecordDate:  item.RecordDate,
+					Amount:      item.Amount,
+					Currency:    curr,
+					Frequency:   item.Frequency,
+				})
+			}
+		}
+		return nil
+	})
+	return divs, err
+}
+
+func (cm *ClientManager) FetchFinnhubAnalystEstimates(ctx context.Context, ticker string) ([]AnalystEstimateItem, error) {
+	var estimates []AnalystEstimateItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/recommendation?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub recommendation create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub recommendation http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub recommendation HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub recommendation read body error: %w", err)
+		}
+
+		var rawList []struct {
+			Period     string `json:"period"`
+			StrongBuy  int    `json:"strongBuy"`
+			Buy        int    `json:"buy"`
+			Hold       int    `json:"hold"`
+			Sell       int    `json:"sell"`
+			StrongSell int    `json:"strongSell"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&rawList); err != nil {
+			return fmt.Errorf("finnhub recommendation decode error: %w", err)
+		}
+
+		for _, item := range rawList {
+			estimates = append(estimates, AnalystEstimateItem{
+				Period:     item.Period,
+				StrongBuy:  item.StrongBuy,
+				Buy:        item.Buy,
+				Hold:       item.Hold,
+				Sell:       item.Sell,
+				StrongSell: item.StrongSell,
+			})
+		}
+		return nil
+	})
+	return estimates, err
+}
+
+func (cm *ClientManager) FetchFinnhubEarningsCalendar(ctx context.Context, ticker string) ([]EarningsCalendarItem, error) {
+	var events []EarningsCalendarItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/calendar/earnings?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub earnings create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub earnings http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub earnings HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub earnings read body error: %w", err)
+		}
+
+		var payload struct {
+			EarningsCalendar []struct {
+				Date            string  `json:"date"`
+				Quarter         int     `json:"quarter"`
+				Year            int     `json:"year"`
+				EPSEstimate     float64 `json:"epsEstimate"`
+				EPSActual       float64 `json:"epsActual"`
+				RevenueEstimate float64 `json:"revenueEstimate"`
+				RevenueActual   float64 `json:"revenueActual"`
+			} `json:"earningsCalendar"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&payload); err != nil {
+			return fmt.Errorf("finnhub earnings decode error: %w", err)
+		}
+
+		for _, item := range payload.EarningsCalendar {
+			events = append(events, EarningsCalendarItem{
+				Date:            item.Date,
+				Quarter:         item.Quarter,
+				Year:            item.Year,
+				EPSEstimate:     item.EPSEstimate,
+				EPSActual:       item.EPSActual,
+				RevenueEstimate: item.RevenueEstimate,
+				RevenueActual:   item.RevenueActual,
+			})
+		}
+		return nil
+	})
+	return events, err
+}
+
+func (cm *ClientManager) FetchFinnhubInstitutionalOwnership(ctx context.Context, ticker string) ([]InstitutionalOwnershipItem, error) {
+	var holdings []InstitutionalOwnershipItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/ownership?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub ownership create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub ownership http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub ownership HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub ownership read body error: %w", err)
+		}
+
+		var payload struct {
+			Ownership []struct {
+				Name   string  `json:"name"`
+				Share  float64 `json:"share"`
+				Change float64 `json:"change"`
+				Value  float64 `json:"value"`
+				Period string  `json:"period"`
+			} `json:"ownership"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&payload); err != nil {
+			return fmt.Errorf("finnhub ownership decode error: %w", err)
+		}
+
+		for _, item := range payload.Ownership {
+			holdings = append(holdings, InstitutionalOwnershipItem{
+				InvestorName: item.Name,
+				SharesHeld:   item.Share,
+				ChangeShares: item.Change,
+				Value:        item.Value,
+				Period:       item.Period,
+			})
+		}
+		return nil
+	})
+	return holdings, err
+}
+
+func (cm *ClientManager) FetchFinnhubInsiderTransactions(ctx context.Context, ticker string) ([]InsiderTransactionItem, error) {
+	var txs []InsiderTransactionItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/insider-transactions?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub insider create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub insider http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub insider HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub insider read body error: %w", err)
+		}
+
+		var payload struct {
+			Data []struct {
+				Name            string  `json:"name"`
+				Share           float64 `json:"share"`
+				Change          float64 `json:"change"`
+				FilingDate      string  `json:"filingDate"`
+				TransactionCode string  `json:"transactionCode"`
+				TransactionPrice float64 `json:"transactionPrice"`
+			} `json:"data"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&payload); err != nil {
+			return fmt.Errorf("finnhub insider decode error: %w", err)
+		}
+
+		for _, item := range payload.Data {
+			txs = append(txs, InsiderTransactionItem{
+				Name:             item.Name,
+				ShareCount:       item.Share,
+				ChangeShares:     item.Change,
+				FilingDate:       item.FilingDate,
+				TransactionCode:  item.TransactionCode,
+				TransactionPrice: item.TransactionPrice,
+			})
+		}
+		return nil
+	})
+	return txs, err
+}
+
+func (cm *ClientManager) FetchFREDSeries(ctx context.Context, seriesID, indicatorName string) ([]MacroIndicatorItem, error) {
+	var indicators []MacroIndicatorItem
+	err := cm.fredCB.Execute(func() error {
+		if err := cm.fredLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("fred rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://api.stlouisfed.org/fred/series/observations?series_id=%s&file_type=json", seriesID)
+		if cm.fredAPIKey != "" {
+			url = fmt.Sprintf("%s&api_key=%s", url, cm.fredAPIKey)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("fred create request error: %w", err)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("fred http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("fred HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("fred read body error: %w", err)
+		}
+
+		var payload struct {
+			Observations []struct {
+				Date  string `json:"date"`
+				Value string `json:"value"`
+			} `json:"observations"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&payload); err != nil {
+			return fmt.Errorf("fred decode error: %w", err)
+		}
+
+		for _, obs := range payload.Observations {
+			val := parseStringToFloat(obs.Value)
+			if obs.Date != "" && obs.Value != "." {
+				indicators = append(indicators, MacroIndicatorItem{
+					SeriesID:      seriesID,
+					IndicatorName: indicatorName,
+					Date:          obs.Date,
+					Value:         val,
+				})
+			}
+		}
+		return nil
+	})
+	return indicators, err
+}
+
+func (cm *ClientManager) FetchFinnhubCompanyNews(ctx context.Context, ticker, from, to string) ([]CompanyNewsItem, error) {
+	var newsList []CompanyNewsItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/company-news?symbol=%s&from=%s&to=%s", ticker, from, to)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub news create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub news http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub news HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub news read body error: %w", err)
+		}
+
+		var rawList []struct {
+			ID        int64  `json:"id"`
+			Headline  string `json:"headline"`
+			Summary   string `json:"summary"`
+			Source    string `json:"source"`
+			URL       string `json:"url"`
+			Datetime  int64  `json:"datetime"`
+			Sentiment struct {
+				Score float64 `json:"score"`
+			} `json:"sentiment"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&rawList); err != nil {
+			return fmt.Errorf("finnhub news decode error: %w", err)
+		}
+
+		for _, item := range rawList {
+			pubTime := time.Unix(item.Datetime, 0)
+			newsList = append(newsList, CompanyNewsItem{
+				NewsID:         item.ID,
+				Headline:       item.Headline,
+				Summary:        item.Summary,
+				Source:         item.Source,
+				URL:            item.URL,
+				PublishedAt:    pubTime,
+				SentimentScore: item.Sentiment.Score,
+			})
+		}
+		return nil
+	})
+	return newsList, err
+}
+
+func (cm *ClientManager) FetchFinnhubSplits(ctx context.Context, ticker string) ([]StockSplitItem, error) {
+	var splits []StockSplitItem
+	err := cm.finnhubCB.Execute(func() error {
+		if err := cm.finnhubLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("finnhub rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://finnhub.io/api/v1/stock/split?symbol=%s", ticker)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("finnhub split create request error: %w", err)
+		}
+
+		if cm.finnhubAPIKey != "" {
+			req.Header.Set("X-Finnhub-Token", cm.finnhubAPIKey)
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("finnhub split http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("finnhub split HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("finnhub split read body error: %w", err)
+		}
+
+		var rawList []struct {
+			Date       string  `json:"date"`
+			FromFactor float64 `json:"fromFactor"`
+			ToFactor   float64 `json:"toFactor"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&rawList); err != nil {
+			return fmt.Errorf("finnhub split decode error: %w", err)
+		}
+
+		for _, item := range rawList {
+			splits = append(splits, StockSplitItem{
+				ExecutionDate: item.Date,
+				FromFactor:    item.FromFactor,
+				ToFactor:      item.ToFactor,
+			})
+		}
+		return nil
+	})
+	return splits, err
+}
+
+func (cm *ClientManager) FetchTiingoHistoricalPrices(ctx context.Context, ticker string, startDate, endDate string) ([]HistoricalPriceItem, error) {
+	var prices []HistoricalPriceItem
+	err := cm.tiingoCB.Execute(func() error {
+		if err := cm.tiingoLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("tiingo rate limit wait error: %w", err)
+		}
+
+		url := fmt.Sprintf("https://api.tiingo.com/tiingo/daily/%s/prices", ticker)
+		params := []string{}
+		if startDate != "" {
+			params = append(params, "startDate="+startDate)
+		}
+		if endDate != "" {
+			params = append(params, "endDate="+endDate)
+		}
+		if cm.tiingoAPIKey != "" {
+			params = append(params, "token="+cm.tiingoAPIKey)
+		}
+		if len(params) > 0 {
+			url = url + "?" + strings.Join(params, "&")
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("tiingo historical create request error: %w", err)
+		}
+
+		if cm.tiingoAPIKey != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Token %s", cm.tiingoAPIKey))
+		}
+
+		resp, err := cm.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("tiingo historical http error: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("tiingo historical HTTP status %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		buf := BufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer BufferPool.Put(buf)
+
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("tiingo historical read body error: %w", err)
+		}
+
+		var rawList []struct {
+			Date     string  `json:"date"`
+			Close    float64 `json:"close"`
+			High     float64 `json:"high"`
+			Low      float64 `json:"low"`
+			Open     float64 `json:"open"`
+			Volume   int64   `json:"volume"`
+			AdjClose float64 `json:"adjClose"`
+		}
+
+		if err := json.NewDecoder(buf).Decode(&rawList); err != nil {
+			return fmt.Errorf("tiingo historical decode error: %w", err)
+		}
+
+		for _, item := range rawList {
+			dateStr := item.Date
+			if len(dateStr) >= 10 {
+				dateStr = dateStr[:10]
+			}
+			prices = append(prices, HistoricalPriceItem{
+				Date:          dateStr,
+				OpenPrice:     item.Open,
+				HighPrice:     item.High,
+				LowPrice:      item.Low,
+				ClosePrice:    item.Close,
+				AdjClosePrice: item.AdjClose,
+				Volume:        item.Volume,
+			})
+		}
+		return nil
+	})
+	return prices, err
 }
 
 func (cm *ClientManager) FetchTiingoMarketData(ctx context.Context, ticker string) (*MarketQuote, error) {

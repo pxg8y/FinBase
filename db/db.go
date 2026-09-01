@@ -71,13 +71,133 @@ type ActionHistory struct {
 	Message    string    `json:"message"`
 }
 
+type ValuationRatio struct {
+	ID              int64     `json:"id"`
+	CompanyID       int64     `json:"company_id"`
+	PERatio         float64   `json:"pe_ratio"`
+	PBRatio         float64   `json:"pb_ratio"`
+	PSRatio         float64   `json:"ps_ratio"`
+	GrossMargin     float64   `json:"gross_margin"`
+	OperatingMargin float64   `json:"operating_margin"`
+	NetMargin       float64   `json:"net_margin"`
+	ROE             float64   `json:"roe"`
+	ROA             float64   `json:"roa"`
+	DebtToEquity    float64   `json:"debt_to_equity"`
+	Timestamp       time.Time `json:"timestamp"`
+}
+
+type Dividend struct {
+	ID          int64   `json:"id"`
+	CompanyID   int64   `json:"company_id"`
+	ExDate      string  `json:"ex_date"`
+	PaymentDate string  `json:"payment_date"`
+	RecordDate  string  `json:"record_date"`
+	Amount      float64 `json:"amount"`
+	Currency    string  `json:"currency"`
+	Frequency   int     `json:"frequency"`
+}
+
+type StockSplit struct {
+	ID            int64   `json:"id"`
+	CompanyID     int64   `json:"company_id"`
+	ExecutionDate string  `json:"execution_date"`
+	FromFactor    float64 `json:"from_factor"`
+	ToFactor      float64 `json:"to_factor"`
+}
+
+type HistoricalPrice struct {
+	ID            int64   `json:"id"`
+	CompanyID     int64   `json:"company_id"`
+	Date          string  `json:"date"`
+	OpenPrice     float64 `json:"open_price"`
+	HighPrice     float64 `json:"high_price"`
+	LowPrice      float64 `json:"low_price"`
+	ClosePrice    float64 `json:"close_price"`
+	AdjClosePrice float64 `json:"adj_close_price"`
+	Volume        int64   `json:"volume"`
+}
+
+type AnalystEstimate struct {
+	ID         int64  `json:"id"`
+	CompanyID  int64  `json:"company_id"`
+	Period     string `json:"period"`
+	StrongBuy  int    `json:"strong_buy"`
+	Buy        int    `json:"buy"`
+	Hold       int    `json:"hold"`
+	Sell       int    `json:"sell"`
+	StrongSell int    `json:"strong_sell"`
+}
+
+type EarningsCalendar struct {
+	ID              int64   `json:"id"`
+	CompanyID       int64   `json:"company_id"`
+	Date            string  `json:"date"`
+	Quarter         int     `json:"quarter"`
+	Year            int     `json:"year"`
+	EPSEstimate     float64 `json:"eps_estimate"`
+	EPSActual       float64 `json:"eps_actual"`
+	RevenueEstimate float64 `json:"revenue_estimate"`
+	RevenueActual   float64 `json:"revenue_actual"`
+}
+
+type CompanyNews struct {
+	ID             int64     `json:"id"`
+	CompanyID      int64     `json:"company_id"`
+	NewsID         int64     `json:"news_id"`
+	Headline       string    `json:"headline"`
+	Summary        string    `json:"summary"`
+	Source         string    `json:"source"`
+	URL            string    `json:"url"`
+	PublishedAt    time.Time `json:"published_at"`
+	SentimentScore float64   `json:"sentiment_score"`
+}
+
+type InsiderTransaction struct {
+	ID               int64   `json:"id"`
+	CompanyID        int64   `json:"company_id"`
+	Name             string  `json:"name"`
+	ShareCount       float64 `json:"share_count"`
+	ChangeShares     float64 `json:"change_shares"`
+	FilingDate       string  `json:"filing_date"`
+	TransactionCode  string  `json:"transaction_code"`
+	TransactionPrice float64 `json:"transaction_price"`
+}
+
+type InstitutionalOwnership struct {
+	ID           int64   `json:"id"`
+	CompanyID    int64   `json:"company_id"`
+	InvestorName string  `json:"investor_name"`
+	SharesHeld   float64 `json:"shares_held"`
+	ChangeShares float64 `json:"change_shares"`
+	Value        float64 `json:"value"`
+	Period       string  `json:"period"`
+}
+
+type MacroIndicator struct {
+	ID            int64   `json:"id"`
+	SeriesID      string  `json:"series_id"`
+	IndicatorName string  `json:"indicator_name"`
+	Date          string  `json:"date"`
+	Value         float64 `json:"value"`
+}
+
 // ConsolidatedCompanyData aggregates data for GET /api/data/company/{ticker}
 type ConsolidatedCompanyData struct {
-	Company      Company         `json:"company"`
-	Watchlist    *Watchitem      `json:"watchlist,omitempty"`
-	MarketData   []MarketData    `json:"market_data"`
-	Fundamentals []Fundamental   `json:"fundamentals"`
-	History      []ActionHistory `json:"history"`
+	Company                Company                  `json:"company"`
+	Watchlist              *Watchitem               `json:"watchlist,omitempty"`
+	MarketData             []MarketData             `json:"market_data"`
+	Fundamentals           []Fundamental            `json:"fundamentals"`
+	ValuationRatios        []ValuationRatio         `json:"valuation_ratios"`
+	Dividends              []Dividend               `json:"dividends"`
+	StockSplits            []StockSplit             `json:"stock_splits"`
+	Historical             []HistoricalPrice        `json:"historical_prices"`
+	AnalystEstimates       []AnalystEstimate        `json:"analyst_estimates"`
+	EarningsCalendar       []EarningsCalendar       `json:"earnings_calendar"`
+	CompanyNews            []CompanyNews            `json:"company_news"`
+	InsiderTransactions    []InsiderTransaction     `json:"insider_transactions"`
+	InstitutionalOwnership []InstitutionalOwnership `json:"institutional_ownership"`
+	MacroIndicators        []MacroIndicator         `json:"macro_indicators,omitempty"`
+	History                []ActionHistory          `json:"history"`
 }
 
 // Execer interface to work with sql.Conn, sql.Tx, sql.DB
@@ -248,6 +368,127 @@ func (db *DB) Migrate() error {
 		status TEXT NOT NULL,
 		message TEXT NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS valuation_ratios (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		pe_ratio REAL DEFAULT 0,
+		pb_ratio REAL DEFAULT 0,
+		ps_ratio REAL DEFAULT 0,
+		gross_margin REAL DEFAULT 0,
+		operating_margin REAL DEFAULT 0,
+		net_margin REAL DEFAULT 0,
+		roe REAL DEFAULT 0,
+		roa REAL DEFAULT 0,
+		debt_to_equity REAL DEFAULT 0,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS dividends (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		ex_date TEXT NOT NULL,
+		payment_date TEXT,
+		record_date TEXT,
+		amount REAL NOT NULL,
+		currency TEXT DEFAULT 'USD',
+		frequency INTEGER DEFAULT 0,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS stock_splits (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		execution_date TEXT NOT NULL,
+		from_factor REAL NOT NULL,
+		to_factor REAL NOT NULL,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS historical_prices (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		date TEXT NOT NULL,
+		open_price REAL NOT NULL,
+		high_price REAL NOT NULL,
+		low_price REAL NOT NULL,
+		close_price REAL NOT NULL,
+		adj_close_price REAL NOT NULL,
+		volume INTEGER NOT NULL,
+		UNIQUE(company_id, date) ON CONFLICT REPLACE,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS analyst_estimates (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		period TEXT NOT NULL,
+		strong_buy INTEGER DEFAULT 0,
+		buy INTEGER DEFAULT 0,
+		hold INTEGER DEFAULT 0,
+		sell INTEGER DEFAULT 0,
+		strong_sell INTEGER DEFAULT 0,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS earnings_calendar (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		date TEXT NOT NULL,
+		quarter INTEGER,
+		year INTEGER,
+		eps_estimate REAL DEFAULT 0,
+		eps_actual REAL DEFAULT 0,
+		revenue_estimate REAL DEFAULT 0,
+		revenue_actual REAL DEFAULT 0,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS company_news (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		news_id INTEGER,
+		headline TEXT NOT NULL,
+		summary TEXT,
+		source TEXT,
+		url TEXT,
+		published_at DATETIME NOT NULL,
+		sentiment_score REAL DEFAULT 0,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS insider_transactions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		share_count REAL DEFAULT 0,
+		change_shares REAL DEFAULT 0,
+		filing_date TEXT NOT NULL,
+		transaction_code TEXT,
+		transaction_price REAL DEFAULT 0,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS institutional_ownership (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		company_id INTEGER NOT NULL,
+		investor_name TEXT NOT NULL,
+		shares_held REAL DEFAULT 0,
+		change_shares REAL DEFAULT 0,
+		value REAL DEFAULT 0,
+		period TEXT NOT NULL,
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS macro_indicators (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		series_id TEXT NOT NULL,
+		indicator_name TEXT NOT NULL,
+		date TEXT NOT NULL,
+		value REAL NOT NULL,
+		UNIQUE(series_id, date) ON CONFLICT REPLACE
+	);
 	`
 	return db.WithTx(context.Background(), func(exec Execer) error {
 		if _, err := exec.ExecContext(context.Background(), schema); err != nil {
@@ -277,6 +518,118 @@ func (db *DB) Migrate() error {
 			_, _ = exec.ExecContext(context.Background(), stmt)
 		}
 
+		return nil
+	})
+}
+
+func (db *DB) InsertInsiderTransactionsBatch(ctx context.Context, companyID int64, txs []InsiderTransaction) error {
+	if len(txs) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, t := range txs {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO insider_transactions (company_id, name, share_count, change_shares, filing_date, transaction_code, transaction_price)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, companyID, t.Name, t.ShareCount, t.ChangeShares, t.FilingDate, t.TransactionCode, t.TransactionPrice)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertInstitutionalOwnershipBatch(ctx context.Context, companyID int64, holdings []InstitutionalOwnership) error {
+	if len(holdings) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, h := range holdings {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO institutional_ownership (company_id, investor_name, shares_held, change_shares, value, period)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`, companyID, h.InvestorName, h.SharesHeld, h.ChangeShares, h.Value, h.Period)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertMacroIndicatorsBatch(ctx context.Context, indicators []MacroIndicator) error {
+	if len(indicators) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, m := range indicators {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO macro_indicators (series_id, indicator_name, date, value)
+				VALUES (?, ?, ?, ?)
+				ON CONFLICT(series_id, date) DO UPDATE SET
+					value=excluded.value,
+					indicator_name=excluded.indicator_name
+			`, m.SeriesID, m.IndicatorName, m.Date, m.Value)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertAnalystEstimatesBatch(ctx context.Context, companyID int64, estimates []AnalystEstimate) error {
+	if len(estimates) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, e := range estimates {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO analyst_estimates (company_id, period, strong_buy, buy, hold, sell, strong_sell)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, companyID, e.Period, e.StrongBuy, e.Buy, e.Hold, e.Sell, e.StrongSell)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertEarningsCalendarBatch(ctx context.Context, companyID int64, events []EarningsCalendar) error {
+	if len(events) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, ec := range events {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO earnings_calendar (company_id, date, quarter, year, eps_estimate, eps_actual, revenue_estimate, revenue_actual)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, companyID, ec.Date, ec.Quarter, ec.Year, ec.EPSEstimate, ec.EPSActual, ec.RevenueEstimate, ec.RevenueActual)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertCompanyNewsBatch(ctx context.Context, companyID int64, newsList []CompanyNews) error {
+	if len(newsList) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, n := range newsList {
+			publishedStr := n.PublishedAt.Format("2006-01-02 15:04:05")
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO company_news (company_id, news_id, headline, summary, source, url, published_at, sentiment_score)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, companyID, n.NewsID, n.Headline, n.Summary, n.Source, n.URL, publishedStr, n.SentimentScore)
+			if err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
@@ -404,6 +757,78 @@ func (db *DB) UpdateWatchitemPriority(ctx context.Context, ticker string, priori
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	return db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET priority = ?, status = 'pending', last_updated = CURRENT_TIMESTAMP WHERE ticker = ?", priority, ticker)
+		return err
+	})
+}
+
+func (db *DB) InsertDividendsBatch(ctx context.Context, companyID int64, divs []Dividend) error {
+	if len(divs) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, d := range divs {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO dividends (company_id, ex_date, payment_date, record_date, amount, currency, frequency)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, companyID, d.ExDate, d.PaymentDate, d.RecordDate, d.Amount, d.Currency, d.Frequency)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertStockSplitsBatch(ctx context.Context, companyID int64, splits []StockSplit) error {
+	if len(splits) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, s := range splits {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO stock_splits (company_id, execution_date, from_factor, to_factor)
+				VALUES (?, ?, ?, ?)
+			`, companyID, s.ExecutionDate, s.FromFactor, s.ToFactor)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertHistoricalPricesBatch(ctx context.Context, companyID int64, prices []HistoricalPrice) error {
+	if len(prices) == 0 {
+		return nil
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		for _, p := range prices {
+			_, err := exec.ExecContext(ctx, `
+				INSERT INTO historical_prices (company_id, date, open_price, high_price, low_price, close_price, adj_close_price, volume)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(company_id, date) DO UPDATE SET
+					open_price=excluded.open_price,
+					high_price=excluded.high_price,
+					low_price=excluded.low_price,
+					close_price=excluded.close_price,
+					adj_close_price=excluded.adj_close_price,
+					volume=excluded.volume
+			`, companyID, p.Date, p.OpenPrice, p.HighPrice, p.LowPrice, p.ClosePrice, p.AdjClosePrice, p.Volume)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (db *DB) InsertValuationRatios(ctx context.Context, companyID int64, vr *ValuationRatio) error {
+	return db.WithTx(ctx, func(exec Execer) error {
+		_, err := exec.ExecContext(ctx, `
+			INSERT INTO valuation_ratios (
+				company_id, pe_ratio, pb_ratio, ps_ratio, gross_margin, operating_margin, net_margin, roe, roa, debt_to_equity
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, companyID, vr.PERatio, vr.PBRatio, vr.PSRatio, vr.GrossMargin, vr.OperatingMargin, vr.NetMargin, vr.ROE, vr.ROA, vr.DebtToEquity)
 		return err
 	})
 }
@@ -586,6 +1011,163 @@ func (db *DB) GetConsolidatedData(ctx context.Context, ticker string) (*Consolid
 				}
 			}
 		}
+
+		// Valuation Ratios
+		vrRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, pe_ratio, pb_ratio, ps_ratio, gross_margin, operating_margin, net_margin, roe, roa, debt_to_equity, timestamp
+			FROM valuation_ratios WHERE company_id = ? ORDER BY timestamp DESC LIMIT 10
+		`, comp.ID)
+		if err == nil {
+			defer vrRows.Close()
+			for vrRows.Next() {
+				var vr ValuationRatio
+				var ts string
+				if err := vrRows.Scan(
+					&vr.ID, &vr.CompanyID, &vr.PERatio, &vr.PBRatio, &vr.PSRatio,
+					&vr.GrossMargin, &vr.OperatingMargin, &vr.NetMargin, &vr.ROE, &vr.ROA, &vr.DebtToEquity, &ts,
+				); err == nil {
+					vr.Timestamp, _ = time.Parse("2006-01-02 15:04:05", ts)
+					data.ValuationRatios = append(data.ValuationRatios, vr)
+				}
+			}
+		}
+
+		// Dividends
+		divRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, ex_date, COALESCE(payment_date, ''), COALESCE(record_date, ''), amount, COALESCE(currency, 'USD'), COALESCE(frequency, 0)
+			FROM dividends WHERE company_id = ? ORDER BY ex_date DESC LIMIT 50
+		`, comp.ID)
+		if err == nil {
+			defer divRows.Close()
+			for divRows.Next() {
+				var d Dividend
+				if err := divRows.Scan(&d.ID, &d.CompanyID, &d.ExDate, &d.PaymentDate, &d.RecordDate, &d.Amount, &d.Currency, &d.Frequency); err == nil {
+					data.Dividends = append(data.Dividends, d)
+				}
+			}
+		}
+
+		// Stock Splits
+		splitRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, execution_date, from_factor, to_factor
+			FROM stock_splits WHERE company_id = ? ORDER BY execution_date DESC LIMIT 50
+		`, comp.ID)
+		if err == nil {
+			defer splitRows.Close()
+			for splitRows.Next() {
+				var s StockSplit
+				if err := splitRows.Scan(&s.ID, &s.CompanyID, &s.ExecutionDate, &s.FromFactor, &s.ToFactor); err == nil {
+					data.StockSplits = append(data.StockSplits, s)
+				}
+			}
+		}
+
+		// Historical Prices
+		hpRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, date, open_price, high_price, low_price, close_price, adj_close_price, volume
+			FROM historical_prices WHERE company_id = ? ORDER BY date DESC LIMIT 100
+		`, comp.ID)
+		if err == nil {
+			defer hpRows.Close()
+			for hpRows.Next() {
+				var hp HistoricalPrice
+				if err := hpRows.Scan(&hp.ID, &hp.CompanyID, &hp.Date, &hp.OpenPrice, &hp.HighPrice, &hp.LowPrice, &hp.ClosePrice, &hp.AdjClosePrice, &hp.Volume); err == nil {
+					data.Historical = append(data.Historical, hp)
+				}
+			}
+		}
+
+		// Analyst Estimates
+		aeRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, period, strong_buy, buy, hold, sell, strong_sell
+			FROM analyst_estimates WHERE company_id = ? ORDER BY period DESC LIMIT 10
+		`, comp.ID)
+		if err == nil {
+			defer aeRows.Close()
+			for aeRows.Next() {
+				var ae AnalystEstimate
+				if err := aeRows.Scan(&ae.ID, &ae.CompanyID, &ae.Period, &ae.StrongBuy, &ae.Buy, &ae.Hold, &ae.Sell, &ae.StrongSell); err == nil {
+					data.AnalystEstimates = append(data.AnalystEstimates, ae)
+				}
+			}
+		}
+
+		// Earnings Calendar
+		ecRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, date, COALESCE(quarter, 0), COALESCE(year, 0), COALESCE(eps_estimate, 0), COALESCE(eps_actual, 0), COALESCE(revenue_estimate, 0), COALESCE(revenue_actual, 0)
+			FROM earnings_calendar WHERE company_id = ? ORDER BY date DESC LIMIT 10
+		`, comp.ID)
+		if err == nil {
+			defer ecRows.Close()
+			for ecRows.Next() {
+				var ec EarningsCalendar
+				if err := ecRows.Scan(&ec.ID, &ec.CompanyID, &ec.Date, &ec.Quarter, &ec.Year, &ec.EPSEstimate, &ec.EPSActual, &ec.RevenueEstimate, &ec.RevenueActual); err == nil {
+					data.EarningsCalendar = append(data.EarningsCalendar, ec)
+				}
+			}
+		}
+
+		// Company News
+		cnRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, COALESCE(news_id, 0), headline, COALESCE(summary, ''), COALESCE(source, ''), COALESCE(url, ''), published_at, COALESCE(sentiment_score, 0)
+			FROM company_news WHERE company_id = ? ORDER BY published_at DESC LIMIT 20
+		`, comp.ID)
+		if err == nil {
+			defer cnRows.Close()
+			for cnRows.Next() {
+				var cn CompanyNews
+				var pubTs string
+				if err := cnRows.Scan(&cn.ID, &cn.CompanyID, &cn.NewsID, &cn.Headline, &cn.Summary, &cn.Source, &cn.URL, &pubTs, &cn.SentimentScore); err == nil {
+					cn.PublishedAt, _ = time.Parse("2006-01-02 15:04:05", pubTs)
+					data.CompanyNews = append(data.CompanyNews, cn)
+				}
+			}
+		}
+
+		// Insider Transactions
+		itRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, name, COALESCE(share_count, 0), COALESCE(change_shares, 0), filing_date, COALESCE(transaction_code, ''), COALESCE(transaction_price, 0)
+			FROM insider_transactions WHERE company_id = ? ORDER BY filing_date DESC LIMIT 20
+		`, comp.ID)
+		if err == nil {
+			defer itRows.Close()
+			for itRows.Next() {
+				var it InsiderTransaction
+				if err := itRows.Scan(&it.ID, &it.CompanyID, &it.Name, &it.ShareCount, &it.ChangeShares, &it.FilingDate, &it.TransactionCode, &it.TransactionPrice); err == nil {
+					data.InsiderTransactions = append(data.InsiderTransactions, it)
+				}
+			}
+		}
+
+		// Institutional Ownership
+		ioRows, err := db.ReadDB.QueryContext(ctx, `
+			SELECT id, company_id, investor_name, COALESCE(shares_held, 0), COALESCE(change_shares, 0), COALESCE(value, 0), period
+			FROM institutional_ownership WHERE company_id = ? ORDER BY period DESC LIMIT 20
+		`, comp.ID)
+		if err == nil {
+			defer ioRows.Close()
+			for ioRows.Next() {
+				var io InstitutionalOwnership
+				if err := ioRows.Scan(&io.ID, &io.CompanyID, &io.InvestorName, &io.SharesHeld, &io.ChangeShares, &io.Value, &io.Period); err == nil {
+					data.InstitutionalOwnership = append(data.InstitutionalOwnership, io)
+				}
+			}
+		}
+	}
+
+	// Macro Indicators
+	macroRows, err := db.ReadDB.QueryContext(ctx, `
+		SELECT id, series_id, indicator_name, date, value
+		FROM macro_indicators ORDER BY date DESC LIMIT 50
+	`)
+	if err == nil {
+		defer macroRows.Close()
+		for macroRows.Next() {
+			var m MacroIndicator
+			if err := macroRows.Scan(&m.ID, &m.SeriesID, &m.IndicatorName, &m.Date, &m.Value); err == nil {
+				data.MacroIndicators = append(data.MacroIndicators, m)
+			}
+		}
 	}
 
 	// Action history
@@ -607,6 +1189,36 @@ func (db *DB) GetConsolidatedData(ctx context.Context, ticker string) (*Consolid
 	}
 	if data.Fundamentals == nil {
 		data.Fundamentals = []Fundamental{}
+	}
+	if data.ValuationRatios == nil {
+		data.ValuationRatios = []ValuationRatio{}
+	}
+	if data.Dividends == nil {
+		data.Dividends = []Dividend{}
+	}
+	if data.StockSplits == nil {
+		data.StockSplits = []StockSplit{}
+	}
+	if data.Historical == nil {
+		data.Historical = []HistoricalPrice{}
+	}
+	if data.AnalystEstimates == nil {
+		data.AnalystEstimates = []AnalystEstimate{}
+	}
+	if data.EarningsCalendar == nil {
+		data.EarningsCalendar = []EarningsCalendar{}
+	}
+	if data.CompanyNews == nil {
+		data.CompanyNews = []CompanyNews{}
+	}
+	if data.InsiderTransactions == nil {
+		data.InsiderTransactions = []InsiderTransaction{}
+	}
+	if data.InstitutionalOwnership == nil {
+		data.InstitutionalOwnership = []InstitutionalOwnership{}
+	}
+	if data.MacroIndicators == nil {
+		data.MacroIndicators = []MacroIndicator{}
 	}
 	if data.History == nil {
 		data.History = []ActionHistory{}

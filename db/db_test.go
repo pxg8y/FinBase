@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestDBInitializationAndPragmas(t *testing.T) {
@@ -98,6 +99,132 @@ func TestDBInitializationAndPragmas(t *testing.T) {
 	}
 	if len(data.History) != 1 || data.History[0].Status != "SUCCESS" {
 		t.Errorf("Unexpected action history: %+v", data.History)
+	}
+
+	// Milestone 1 Test: Valuation & Ratios DB operations
+	valRatio := &ValuationRatio{
+		PERatio:         28.5,
+		PBRatio:         45.2,
+		PSRatio:         7.8,
+		GrossMargin:     44.1,
+		OperatingMargin: 30.2,
+		NetMargin:       25.3,
+		ROE:             160.5,
+		ROA:             28.4,
+		DebtToEquity:    1.8,
+	}
+	if err := database.InsertValuationRatios(ctx, compID, valRatio); err != nil {
+		t.Fatalf("Failed to insert valuation ratios: %v", err)
+	}
+
+	dataWithRatios, err := database.GetConsolidatedData(ctx, "AAPL")
+	if err != nil {
+		t.Fatalf("Failed to get consolidated data with ratios: %v", err)
+	}
+	if len(dataWithRatios.ValuationRatios) != 1 {
+		t.Fatalf("Expected 1 valuation ratio record, got %d", len(dataWithRatios.ValuationRatios))
+	}
+	r := dataWithRatios.ValuationRatios[0]
+	if r.PERatio != 28.5 || r.GrossMargin != 44.1 || r.DebtToEquity != 1.8 {
+		t.Errorf("Unexpected valuation ratio values: %+v", r)
+	}
+
+	// Milestone 2 Test: Dividends & Stock Splits DB operations
+	divs := []Dividend{
+		{ExDate: "2023-11-10", PaymentDate: "2023-11-16", RecordDate: "2023-11-13", Amount: 0.24, Currency: "USD", Frequency: 4},
+	}
+	if err := database.InsertDividendsBatch(ctx, compID, divs); err != nil {
+		t.Fatalf("Failed to insert dividends batch: %v", err)
+	}
+
+	splits := []StockSplit{
+		{ExecutionDate: "2020-08-31", FromFactor: 1, ToFactor: 4},
+	}
+	if err := database.InsertStockSplitsBatch(ctx, compID, splits); err != nil {
+		t.Fatalf("Failed to insert stock splits batch: %v", err)
+	}
+
+	dataWithCorpActions, err := database.GetConsolidatedData(ctx, "AAPL")
+	if err != nil {
+		t.Fatalf("Failed to get consolidated data with corporate actions: %v", err)
+	}
+	if len(dataWithCorpActions.Dividends) != 1 || dataWithCorpActions.Dividends[0].Amount != 0.24 {
+		t.Errorf("Unexpected dividends: %+v", dataWithCorpActions.Dividends)
+	}
+	if len(dataWithCorpActions.StockSplits) != 1 || dataWithCorpActions.StockSplits[0].ToFactor != 4 {
+		t.Errorf("Unexpected stock splits: %+v", dataWithCorpActions.StockSplits)
+	}
+
+	// Milestone 4 & 5 Test: Analyst Estimates, Earnings Calendar, Company News DB operations
+	estimates := []AnalystEstimate{
+		{Period: "2023-11-01", StrongBuy: 10, Buy: 15, Hold: 5, Sell: 1, StrongSell: 0},
+	}
+	if err := database.InsertAnalystEstimatesBatch(ctx, compID, estimates); err != nil {
+		t.Fatalf("Failed to insert analyst estimates batch: %v", err)
+	}
+
+	earnings := []EarningsCalendar{
+		{Date: "2023-11-02", Quarter: 4, Year: 2023, EPSEstimate: 1.39, EPSActual: 1.46, RevenueEstimate: 89300000000, RevenueActual: 89500000000},
+	}
+	if err := database.InsertEarningsCalendarBatch(ctx, compID, earnings); err != nil {
+		t.Fatalf("Failed to insert earnings calendar batch: %v", err)
+	}
+
+	news := []CompanyNews{
+		{NewsID: 1001, Headline: "Apple Reports Fourth Quarter Results", Summary: "Apple today announced financial results", Source: "Business Wire", URL: "https://example.com/news/1", PublishedAt: time.Now()},
+	}
+	if err := database.InsertCompanyNewsBatch(ctx, compID, news); err != nil {
+		t.Fatalf("Failed to insert company news batch: %v", err)
+	}
+
+	dataExt, err := database.GetConsolidatedData(ctx, "AAPL")
+	if err != nil {
+		t.Fatalf("Failed to get consolidated data with ext domains: %v", err)
+	}
+	if len(dataExt.AnalystEstimates) != 1 || dataExt.AnalystEstimates[0].StrongBuy != 10 {
+		t.Errorf("Unexpected analyst estimates: %+v", dataExt.AnalystEstimates)
+	}
+	if len(dataExt.EarningsCalendar) != 1 || dataExt.EarningsCalendar[0].EPSActual != 1.46 {
+		t.Errorf("Unexpected earnings calendar: %+v", dataExt.EarningsCalendar)
+	}
+	if len(dataExt.CompanyNews) != 1 || dataExt.CompanyNews[0].Headline != "Apple Reports Fourth Quarter Results" {
+		t.Errorf("Unexpected company news: %+v", dataExt.CompanyNews)
+	}
+
+	// Milestone 6 & 7 Test: Insider Transactions, Institutional Ownership, Macro Indicators DB operations
+	insiders := []InsiderTransaction{
+		{Name: "Cook Timothy D", ShareCount: 3000000, ChangeShares: -50000, FilingDate: "2023-10-15", TransactionCode: "S", TransactionPrice: 178.50},
+	}
+	if err := database.InsertInsiderTransactionsBatch(ctx, compID, insiders); err != nil {
+		t.Fatalf("Failed to insert insider transactions batch: %v", err)
+	}
+
+	institutionals := []InstitutionalOwnership{
+		{InvestorName: "Vanguard Group Inc", SharesHeld: 120000000, ChangeShares: 1500000, Value: 21000000000, Period: "2023-Q3"},
+	}
+	if err := database.InsertInstitutionalOwnershipBatch(ctx, compID, institutionals); err != nil {
+		t.Fatalf("Failed to insert institutional ownership batch: %v", err)
+	}
+
+	macros := []MacroIndicator{
+		{SeriesID: "DGS10", IndicatorName: "10-Year Treasury Yield", Date: "2023-11-01", Value: 4.52},
+	}
+	if err := database.InsertMacroIndicatorsBatch(ctx, macros); err != nil {
+		t.Fatalf("Failed to insert macro indicators batch: %v", err)
+	}
+
+	dataFinal, err := database.GetConsolidatedData(ctx, "AAPL")
+	if err != nil {
+		t.Fatalf("Failed to get consolidated data with final domains: %v", err)
+	}
+	if len(dataFinal.InsiderTransactions) != 1 || dataFinal.InsiderTransactions[0].Name != "Cook Timothy D" {
+		t.Errorf("Unexpected insider transactions: %+v", dataFinal.InsiderTransactions)
+	}
+	if len(dataFinal.InstitutionalOwnership) != 1 || dataFinal.InstitutionalOwnership[0].InvestorName != "Vanguard Group Inc" {
+		t.Errorf("Unexpected institutional ownership: %+v", dataFinal.InstitutionalOwnership)
+	}
+	if len(dataFinal.MacroIndicators) != 1 || dataFinal.MacroIndicators[0].Value != 4.52 {
+		t.Errorf("Unexpected macro indicators: %+v", dataFinal.MacroIndicators)
 	}
 }
 
