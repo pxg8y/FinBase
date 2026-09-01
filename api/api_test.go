@@ -18,15 +18,50 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 	defer database.Close()
 
 	broker := NewSSEBroker()
-	server := NewServer(database, broker)
+	apiKey := "test-api-key-123"
+	jwtSecret := []byte("test-jwt-secret-456")
+	server := NewServer(database, broker, apiKey, jwtSecret)
 
-	// Test GET /api/watchlist (empty)
+	// Test unauthorized GET /api/watchlist (should fail 401)
 	req := httptest.NewRequest("GET", "/api/watchlist", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected status 401 Unauthorized for unauthenticated request, got %d", rec.Code)
+	}
+
+	// Test issue auth token
+	req = httptest.NewRequest("POST", "/api/auth/token", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK for auth token issuance, got %d", rec.Code)
+	}
+	var tokenResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&tokenResp); err != nil || tokenResp.Token == "" {
+		t.Fatalf("Failed to decode token response: %v", err)
+	}
+
+	// Test authenticated GET /api/watchlist using API Key header
+	req = httptest.NewRequest("GET", "/api/watchlist", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("Expected status 200 OK, got %d", rec.Code)
+		t.Fatalf("Expected status 200 OK with X-API-Key header, got %d", rec.Code)
+	}
+
+	// Test authenticated GET /api/watchlist using Bearer JWT
+	req = httptest.NewRequest("GET", "/api/watchlist", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenResp.Token)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK with Bearer JWT, got %d", rec.Code)
 	}
 
 	// Test POST /api/watchlist
@@ -36,6 +71,7 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 	})
 	req = httptest.NewRequest("POST", "/api/watchlist", bytes.NewBuffer(postBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -45,6 +81,7 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 
 	// Test GET /api/data/company/MSFT
 	req = httptest.NewRequest("GET", "/api/data/company/MSFT", nil)
+	req.Header.Set("X-API-Key", apiKey)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -63,6 +100,7 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 
 	// Test DELETE /api/watchlist?ticker=MSFT
 	req = httptest.NewRequest("DELETE", "/api/watchlist?ticker=MSFT", nil)
+	req.Header.Set("X-API-Key", apiKey)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 

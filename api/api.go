@@ -141,16 +141,20 @@ func (b *SSEBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Server holds API router dependencies
 type Server struct {
-	db     *db.DB
-	broker *SSEBroker
-	mux    *http.ServeMux
+	db        *db.DB
+	broker    *SSEBroker
+	mux       *http.ServeMux
+	apiKey    string
+	jwtSecret []byte
 }
 
-func NewServer(database *db.DB, broker *SSEBroker) *Server {
+func NewServer(database *db.DB, broker *SSEBroker, apiKey string, jwtSecret []byte) *Server {
 	s := &Server{
-		db:     database,
-		broker: broker,
-		mux:    http.NewServeMux(),
+		db:        database,
+		broker:    broker,
+		mux:       http.NewServeMux(),
+		apiKey:    apiKey,
+		jwtSecret: jwtSecret,
 	}
 	s.routes()
 	return s
@@ -161,14 +165,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	// API routes
-	s.mux.HandleFunc("/api/watchlist", s.handleWatchlist)
-	s.mux.HandleFunc("/api/data/company/", s.handleCompanyData)
-	s.mux.Handle("/api/sse", s.broker)
+	// Public endpoint to issue short-lived JWT for dashboard
+	s.mux.HandleFunc("/api/auth/token", s.handleAuthToken)
+
+	// Protected API routes
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/watchlist", s.handleWatchlist)
+	apiMux.HandleFunc("/api/data/company/", s.handleCompanyData)
+	apiMux.Handle("/api/sse", s.broker)
+
+	s.mux.Handle("/api/", AuthMiddleware(s.apiKey, s.jwtSecret, apiMux))
 
 	// Embedded static web dashboard
 	fileServer := http.FileServer(http.FS(web.Content))
 	s.mux.Handle("/", fileServer)
+}
+
+func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	token, err := GenerateJWT(s.jwtSecret, 15*time.Minute)
+	if err != nil {
+		http.Error(w, `{"error":"failed to generate token"}`, http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"token":      token,
+		"expires_in": 900,
+	})
 }
 
 func (s *Server) handleWatchlist(w http.ResponseWriter, r *http.Request) {
