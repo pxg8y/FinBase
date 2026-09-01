@@ -98,6 +98,20 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 		t.Errorf("Expected company ticker MSFT, got %s", data.Company.Ticker)
 	}
 
+	// Test POST /api/watchlist/refresh (force refresh endpoint)
+	refreshBody, _ := json.Marshal(map[string]any{
+		"ticker": "MSFT",
+	})
+	req = httptest.NewRequest("POST", "/api/watchlist/refresh", bytes.NewBuffer(refreshBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK for force refresh, got %d", rec.Code)
+	}
+
 	// Test DELETE /api/watchlist?ticker=MSFT
 	req = httptest.NewRequest("DELETE", "/api/watchlist?ticker=MSFT", nil)
 	req.Header.Set("X-API-Key", apiKey)

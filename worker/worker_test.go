@@ -210,6 +210,48 @@ func TestWorkerPoolProcessing(t *testing.T) {
 	if list[0].Status == "pending" {
 		t.Errorf("Expected status to change from pending, got %s", list[0].Status)
 	}
+
+	if list[0].ForceFullRefresh {
+		t.Errorf("Expected ForceFullRefresh to be reset to false after processing, got true")
+	}
+}
+
+func TestWorkerPoolTTLSkips(t *testing.T) {
+	database, err := db.NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	compID, err := database.UpsertCompany(ctx, &db.Company{
+		Ticker: "TSLA",
+		Name:   "Tesla, Inc.",
+	})
+	if err != nil {
+		t.Fatalf("Failed to upsert company: %v", err)
+	}
+
+	clientMgr := clients.NewClientManager("TestApp user@test.com", "test-finnhub", "test-figi", "test-tiingo", "test-twelve", "test-fmp")
+	wp := NewWorkerPool(database, clientMgr, nil, 1)
+
+	// Set fresh timestamp for profile and market_data
+	if err := database.SetCategoryLastUpdated(ctx, compID, "profile"); err != nil {
+		t.Fatalf("Failed to set category last updated: %v", err)
+	}
+	if err := database.SetCategoryLastUpdated(ctx, compID, "market_data"); err != nil {
+		t.Fatalf("Failed to set category last updated: %v", err)
+	}
+
+	// shouldUpdateCategory with force=false should return false for fresh categories
+	if wp.shouldUpdateCategory(ctx, compID, "profile", 24*time.Hour, false) {
+		t.Errorf("Expected shouldUpdateCategory to be false for fresh profile, got true")
+	}
+
+	// shouldUpdateCategory with force=true should return true even if fresh
+	if !wp.shouldUpdateCategory(ctx, compID, "profile", 24*time.Hour, true) {
+		t.Errorf("Expected shouldUpdateCategory to be true when force=true, got false")
+	}
 }
 
 func TestDispatcherContinuousRescheduling(t *testing.T) {

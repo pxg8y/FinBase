@@ -20,12 +20,13 @@ type DB struct {
 
 // Models
 type Watchitem struct {
-	ID             int64     `json:"id"`
-	Ticker         string    `json:"ticker"`
-	Priority       int       `json:"priority"`
-	Status         string    `json:"status"`
-	LastUpdated    time.Time `json:"last_updated"`
-	NextUpdateTime time.Time `json:"next_update_time"`
+	ID                int64     `json:"id"`
+	Ticker            string    `json:"ticker"`
+	Priority          int       `json:"priority"`
+	Status            string    `json:"status"`
+	LastUpdated       time.Time `json:"last_updated"`
+	NextUpdateTime    time.Time `json:"next_update_time"`
+	ForceFullRefresh bool      `json:"force_full_refresh"`
 }
 
 type JobStatusSummary struct {
@@ -330,7 +331,16 @@ func (db *DB) Migrate() error {
 		ticker TEXT UNIQUE NOT NULL,
 		priority INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL DEFAULT 'pending',
-		last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+		last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+		force_full_refresh INTEGER DEFAULT 1
+	);
+
+	CREATE TABLE IF NOT EXISTS data_update_timestamps (
+		company_id INTEGER NOT NULL,
+		category TEXT NOT NULL,
+		last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (company_id, category),
+		FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
 	);
 
 	CREATE TABLE IF NOT EXISTS companies (
@@ -506,6 +516,13 @@ func (db *DB) Migrate() error {
 		}
 
 		// Migrations for existing tables if columns are missing
+		watchlistMigrations := []string{
+			"ALTER TABLE watchlist ADD COLUMN force_full_refresh INTEGER DEFAULT 1",
+		}
+		for _, stmt := range watchlistMigrations {
+			_, _ = exec.ExecContext(context.Background(), stmt)
+		}
+
 		companyMigrations := []string{
 			"ALTER TABLE companies ADD COLUMN exchange TEXT",
 			"ALTER TABLE companies ADD COLUMN outstanding_shares REAL DEFAULT 0",
@@ -667,7 +684,7 @@ func (db *DB) InsertFundamentalsBatch(ctx context.Context, companyID int64, item
 
 // Watchlist methods
 func (db *DB) GetWatchlist(ctx context.Context) ([]Watchitem, error) {
-	rows, err := db.ReadDB.QueryContext(ctx, "SELECT id, ticker, priority, status, last_updated FROM watchlist ORDER BY priority DESC, id ASC")
+	rows, err := db.ReadDB.QueryContext(ctx, "SELECT id, ticker, priority, status, last_updated, COALESCE(force_full_refresh, 0) FROM watchlist ORDER BY priority DESC, id ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -677,9 +694,11 @@ func (db *DB) GetWatchlist(ctx context.Context) ([]Watchitem, error) {
 	for rows.Next() {
 		var item Watchitem
 		var lastUpdatedStr string
-		if err := rows.Scan(&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr); err != nil {
+		var forceRefreshInt int
+		if err := rows.Scan(&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr, &forceRefreshInt); err != nil {
 			return nil, err
 		}
+		item.ForceFullRefresh = (forceRefreshInt != 0)
 		item.LastUpdated, _ = time.Parse("2006-01-02 15:04:05", lastUpdatedStr)
 		if item.LastUpdated.IsZero() {
 			item.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
@@ -754,7 +773,7 @@ func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*W
 	var item Watchitem
 	err := db.WithTx(ctx, func(exec Execer) error {
 		res, err := exec.ExecContext(ctx,
-			"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', CURRENT_TIMESTAMP) ON CONFLICT(ticker) DO UPDATE SET priority=excluded.priority, status='pending', last_updated=CURRENT_TIMESTAMP",
+			"INSERT INTO watchlist (ticker, priority, status, last_updated, force_full_refresh) VALUES (?, ?, 'pending', CURRENT_TIMESTAMP, 1) ON CONFLICT(ticker) DO UPDATE SET priority=excluded.priority, status='pending', last_updated=CURRENT_TIMESTAMP, force_full_refresh=1",
 			ticker, priority,
 		)
 		if err != nil {
@@ -765,16 +784,19 @@ func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*W
 			return err
 		}
 
-		row := exec.QueryRowContext(ctx, "SELECT id, ticker, priority, status, last_updated FROM watchlist WHERE ticker = ?", ticker)
+		row := exec.QueryRowContext(ctx, "SELECT id, ticker, priority, status, last_updated, COALESCE(force_full_refresh, 0) FROM watchlist WHERE ticker = ?", ticker)
 		var lastUpdatedStr string
-		if err := row.Scan(&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr); err != nil {
+		var forceRefreshInt int
+		if err := row.Scan(&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr, &forceRefreshInt); err != nil {
 			item.ID = id
 			item.Ticker = ticker
 			item.Priority = priority
 			item.Status = "pending"
 			item.LastUpdated = time.Now()
+			item.ForceFullRefresh = true
 		} else {
 			item.LastUpdated, _ = time.Parse("2006-01-02 15:04:05", lastUpdatedStr)
+			item.ForceFullRefresh = (forceRefreshInt != 0)
 		}
 		return nil
 	})
@@ -789,7 +811,7 @@ func (db *DB) FetchAndQueueNextWatchitem(ctx context.Context) (*Watchitem, error
 	var item Watchitem
 	err := db.WithTx(ctx, func(exec Execer) error {
 		query := `
-			SELECT id, ticker, priority, status, last_updated
+			SELECT id, ticker, priority, status, last_updated, COALESCE(force_full_refresh, 0)
 			FROM watchlist
 			WHERE status = 'pending'
 			   OR (status NOT IN ('queued', 'processing') AND last_updated <= datetime('now', '-5 minutes'))
@@ -797,8 +819,9 @@ func (db *DB) FetchAndQueueNextWatchitem(ctx context.Context) (*Watchitem, error
 			LIMIT 1
 		`
 		var lastUpdatedStr string
+		var forceRefreshInt int
 		err := exec.QueryRowContext(ctx, query).Scan(
-			&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr,
+			&item.ID, &item.Ticker, &item.Priority, &item.Status, &lastUpdatedStr, &forceRefreshInt,
 		)
 		if err == sql.ErrNoRows {
 			return nil
@@ -810,6 +833,7 @@ func (db *DB) FetchAndQueueNextWatchitem(ctx context.Context) (*Watchitem, error
 		if item.LastUpdated.IsZero() {
 			item.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
 		}
+		item.ForceFullRefresh = (forceRefreshInt != 0)
 
 		_, err = exec.ExecContext(ctx, "UPDATE watchlist SET status = 'queued', last_updated = CURRENT_TIMESTAMP WHERE id = ?", item.ID)
 		return err
@@ -821,6 +845,56 @@ func (db *DB) FetchAndQueueNextWatchitem(ctx context.Context) (*Watchitem, error
 		return nil, nil
 	}
 	return &item, nil
+}
+
+func (db *DB) SetWatchitemForceRefresh(ctx context.Context, ticker string, force bool) error {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
+	val := 0
+	if force {
+		val = 1
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET force_full_refresh = ? WHERE ticker = ?", val, ticker)
+		return err
+	})
+}
+
+func (db *DB) SetWatchitemForceRefreshAll(ctx context.Context, force bool) error {
+	val := 0
+	if force {
+		val = 1
+	}
+	return db.WithTx(ctx, func(exec Execer) error {
+		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET force_full_refresh = ?, status = 'pending', last_updated = CURRENT_TIMESTAMP", val)
+		return err
+	})
+}
+
+func (db *DB) GetCategoryLastUpdated(ctx context.Context, companyID int64, category string) (time.Time, error) {
+	var lastUpdatedStr string
+	err := db.ReadDB.QueryRowContext(ctx, "SELECT last_updated FROM data_update_timestamps WHERE company_id = ? AND category = ?", companyID, category).Scan(&lastUpdatedStr)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, err := time.Parse("2006-01-02 15:04:05", lastUpdatedStr)
+	if err != nil {
+		t, _ = time.Parse(time.RFC3339, lastUpdatedStr)
+	}
+	return t, nil
+}
+
+func (db *DB) SetCategoryLastUpdated(ctx context.Context, companyID int64, category string) error {
+	return db.WithTx(ctx, func(exec Execer) error {
+		_, err := exec.ExecContext(ctx, `
+			INSERT INTO data_update_timestamps (company_id, category, last_updated)
+			VALUES (?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(company_id, category) DO UPDATE SET last_updated = CURRENT_TIMESTAMP
+		`, companyID, category)
+		return err
+	})
 }
 
 func (db *DB) UpdateWatchitemPriority(ctx context.Context, ticker string, priority int) error {
