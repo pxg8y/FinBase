@@ -3,15 +3,24 @@ set -e
 
 echo "🚀 Starting automated deployment..."
 
-# 1. Git Pull (force overwrite local changes)
+# 1. Git Pull (force overwrite local changes unless SKIP_GIT_PULL is set)
 echo "📦 Pulling latest changes from Git..."
-git fetch --all
-git reset --hard origin/main
+if [ "${SKIP_GIT_PULL}" != "true" ]; then
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git fetch --all 2>/dev/null || true
+        git reset --hard origin/main 2>/dev/null || true
+    fi
+fi
 
-# 2. Build the Docker Image
+# 2. Build Binary & Docker Image
 IMAGE_NAME="finbase:latest"
+echo "🔨 Compiling static Go binary and copying ca-certificates..."
+CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o fdaae main.go
+cp /etc/ssl/certs/ca-certificates.crt ./ca-certificates.crt
+
 echo "🔨 Building Docker image $IMAGE_NAME..."
 docker build -t "$IMAGE_NAME" .
+rm -f ./ca-certificates.crt ./fdaae
 
 # 3. Test New Image in Temporary Container
 TEST_CONTAINER="finbase-test"
@@ -36,7 +45,7 @@ RETRY_COUNT=0
 HEALTHY=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if curl -sf http://localhost:$TEST_PORT/api/watchlist > /dev/null; then
+    if curl -sf http://localhost:$TEST_PORT/api/health > /dev/null; then
         HEALTHY=true
         break
     fi
@@ -84,7 +93,7 @@ RETRY_COUNT=0
 HEALTHY=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if curl -sf http://localhost:$PROD_PORT/api/watchlist > /dev/null; then
+    if curl -sf http://localhost:$PROD_PORT/api/health > /dev/null; then
         HEALTHY=true
         break
     fi
