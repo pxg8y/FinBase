@@ -286,3 +286,212 @@ func TestFetchSECCIKFormatted(t *testing.T) {
 		t.Errorf("Expected padded CIK '0000320193', got '%s'", cik)
 	}
 }
+
+func TestFetchFinnhubValuationRatios(t *testing.T) {
+	cm := NewClientManager("TestApp user@test.com", "test-finnhub-key", "", "", "", "")
+
+	// Test 1: Successful response (200 OK)
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				if req.Header.Get("X-Finnhub-Token") != "test-finnhub-key" {
+					t.Errorf("Expected X-Finnhub-Token header")
+				}
+				rec := httptest.NewRecorder()
+				rec.Header().Set("Content-Type", "application/json")
+				rec.WriteString(`{
+					"metric": {
+						"peNormalizedAnnual": 28.5,
+						"pbAnnual": 45.2,
+						"psAnnual": 7.8,
+						"grossMarginAnnual": 44.1,
+						"operatingMarginAnnual": 30.2,
+						"netProfitMarginAnnual": 25.3,
+						"roeTTM": 160.5,
+						"roaTTM": 28.4,
+						"totalDebt/totalEquityAnnual": 1.8
+					}
+				}`)
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	ratios, err := cm.FetchFinnhubValuationRatios(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchFinnhubValuationRatios failed: %v", err)
+	}
+	if ratios.PERatio != 28.5 || ratios.GrossMargin != 44.1 || ratios.DebtToEquity != 1.8 {
+		t.Errorf("Unexpected valuation ratios: %+v", ratios)
+	}
+
+	// Test 2: Rate limit response (429)
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				rec.WriteHeader(http.StatusTooManyRequests)
+				rec.WriteString(`{"error": "API limit reached"}`)
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	_, err = cm.FetchFinnhubValuationRatios(context.Background(), "AAPL")
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Errorf("Expected 429 rate limit error, got %v", err)
+	}
+}
+
+func TestFetchFinnhubDividendsAndSplits(t *testing.T) {
+	cm := NewClientManager("TestApp user@test.com", "test-finnhub-key", "", "test-tiingo-key", "", "")
+
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				rec.Header().Set("Content-Type", "application/json")
+				if strings.Contains(req.URL.Path, "/stock/dividend") {
+					rec.WriteString(`[
+						{"date": "2023-11-10", "payDate": "2023-11-16", "recordDate": "2023-11-13", "amount": 0.24, "currency": "USD"}
+					]`)
+				} else if strings.Contains(req.URL.Path, "/stock/split") {
+					rec.WriteString(`[
+						{"date": "2020-08-31", "fromFactor": 1, "toFactor": 4}
+					]`)
+				} else {
+					rec.WriteHeader(http.StatusNotFound)
+				}
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	divs, err := cm.FetchFinnhubDividends(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchFinnhubDividends failed: %v", err)
+	}
+	if len(divs) != 1 || divs[0].Amount != 0.24 {
+		t.Errorf("Unexpected dividends: %+v", divs)
+	}
+
+	splits, err := cm.FetchFinnhubSplits(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchFinnhubSplits failed: %v", err)
+	}
+	if len(splits) != 1 || splits[0].ToFactor != 4 {
+		t.Errorf("Unexpected splits: %+v", splits)
+	}
+}
+
+func TestFetchTiingoHistoricalPrices(t *testing.T) {
+	cm := NewClientManager("TestApp user@test.com", "", "", "test-tiingo-key", "", "")
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				rec.Header().Set("Content-Type", "application/json")
+				rec.WriteString(`[
+					{"date": "2023-11-10T00:00:00.000Z", "close": 186.4, "high": 186.57, "low": 183.53, "open": 183.97, "volume": 56900000, "adjClose": 186.4}
+				]`)
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	prices, err := cm.FetchTiingoHistoricalPrices(context.Background(), "AAPL", "2023-11-01", "2023-11-10")
+	if err != nil {
+		t.Fatalf("FetchTiingoHistoricalPrices failed: %v", err)
+	}
+	if len(prices) != 1 || prices[0].ClosePrice != 186.4 {
+		t.Errorf("Unexpected historical prices: %+v", prices)
+	}
+}
+
+func TestFetchFinnhubAnalystEarningsAndNews(t *testing.T) {
+	cm := NewClientManager("TestApp user@test.com", "test-finnhub-key", "", "", "", "")
+
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				rec.Header().Set("Content-Type", "application/json")
+				if strings.Contains(req.URL.Path, "/stock/recommendation") {
+					rec.WriteString(`[{"period": "2023-11-01", "strongBuy": 10, "buy": 15, "hold": 5, "sell": 1, "strongSell": 0}]`)
+				} else if strings.Contains(req.URL.Path, "/calendar/earnings") {
+					rec.WriteString(`{"earningsCalendar": [{"date": "2023-11-02", "quarter": 4, "year": 2023, "epsEstimate": 1.39, "epsActual": 1.46, "revenueEstimate": 89300000000, "revenueActual": 89500000000}]}`)
+				} else if strings.Contains(req.URL.Path, "/company-news") {
+					rec.WriteString(`[{"id": 1001, "headline": "Test Headline", "summary": "Test Summary", "source": "Test Source", "url": "https://example.com", "datetime": 1699000000, "sentiment": {"score": 0.8}}]`)
+				} else {
+					rec.WriteHeader(http.StatusNotFound)
+				}
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	estimates, err := cm.FetchFinnhubAnalystEstimates(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchFinnhubAnalystEstimates failed: %v", err)
+	}
+	if len(estimates) != 1 || estimates[0].StrongBuy != 10 {
+		t.Errorf("Unexpected analyst estimates: %+v", estimates)
+	}
+
+	earnings, err := cm.FetchFinnhubEarningsCalendar(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchFinnhubEarningsCalendar failed: %v", err)
+	}
+	if len(earnings) != 1 || earnings[0].EPSActual != 1.46 {
+		t.Errorf("Unexpected earnings calendar: %+v", earnings)
+	}
+
+	news, err := cm.FetchFinnhubCompanyNews(context.Background(), "AAPL", "2023-10-01", "2023-11-01")
+	if err != nil {
+		t.Fatalf("FetchFinnhubCompanyNews failed: %v", err)
+	}
+	if len(news) != 1 || news[0].Headline != "Test Headline" || news[0].SentimentScore != 0.8 {
+		t.Errorf("Unexpected news items: %+v", news)
+	}
+}
+
+func TestFetchInsiderAndFRED(t *testing.T) {
+	cm := NewClientManager("TestApp user@test.com", "test-finnhub-key", "", "", "", "")
+	cm.SetFREDAPIKey("test-fred-key")
+
+	cm.httpClient = &http.Client{
+		Transport: &mockTripper{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				rec.Header().Set("Content-Type", "application/json")
+				if strings.Contains(req.URL.Path, "/stock/insider-transactions") {
+					rec.WriteString(`{"data": [{"name": "Cook Timothy D", "share": 3000000, "change": -50000, "filingDate": "2023-10-15", "transactionCode": "S", "transactionPrice": 178.5}]}`)
+				} else if strings.Contains(req.URL.Path, "/fred/series/observations") {
+					if !strings.Contains(req.URL.RawQuery, "api_key=test-fred-key") {
+						t.Errorf("Expected api_key in query params for FRED")
+					}
+					rec.WriteString(`{"observations": [{"date": "2023-11-01", "value": "4.52"}]}`)
+				} else {
+					rec.WriteHeader(http.StatusNotFound)
+				}
+				return rec.Result(), nil
+			},
+		},
+	}
+
+	insiders, err := cm.FetchFinnhubInsiderTransactions(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("FetchFinnhubInsiderTransactions failed: %v", err)
+	}
+	if len(insiders) != 1 || insiders[0].Name != "Cook Timothy D" || insiders[0].ChangeShares != -50000 {
+		t.Errorf("Unexpected insider transaction: %+v", insiders)
+	}
+
+	macros, err := cm.FetchFREDSeries(context.Background(), "DGS10", "10-Year Treasury Constant Maturity Rate")
+	if err != nil {
+		t.Fatalf("FetchFREDSeries failed: %v", err)
+	}
+	if len(macros) != 1 || macros[0].SeriesID != "DGS10" || macros[0].Value != 4.52 {
+		t.Errorf("Unexpected macro indicator: %+v", macros)
+	}
+}

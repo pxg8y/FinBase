@@ -240,6 +240,216 @@ func (wp *WorkerPool) processJob(ctx context.Context, job Job) {
 		}
 	}
 
+	// 6. Milestone 1: Valuation & Ratios (Finnhub Basic Financials)
+	ratios, err := wp.clients.FetchFinnhubValuationRatios(ctx, tickerStr)
+	if err == nil && ratios != nil {
+		vr := &db.ValuationRatio{
+			PERatio:         ratios.PERatio,
+			PBRatio:         ratios.PBRatio,
+			PSRatio:         ratios.PSRatio,
+			GrossMargin:     ratios.GrossMargin,
+			OperatingMargin: ratios.OperatingMargin,
+			NetMargin:       ratios.NetMargin,
+			ROE:             ratios.ROE,
+			ROA:             ratios.ROA,
+			DebtToEquity:    ratios.DebtToEquity,
+		}
+		if err := wp.db.InsertValuationRatios(ctx, compID, vr); err != nil {
+			log.Printf("[Worker] Error inserting valuation ratios for %s: %v", tickerStr, err)
+		} else {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_VALUATION_RATIOS", "SUCCESS", fmt.Sprintf("P/E: %.2f, P/B: %.2f, Net Margin: %.2f%%", ratios.PERatio, ratios.PBRatio, ratios.NetMargin))
+		}
+	} else if err != nil {
+		log.Printf("[Worker] Error fetching valuation ratios for %s: %v", tickerStr, err)
+	}
+
+	// 7. Milestone 2: Dividends & Corporate Actions (Finnhub / Tiingo)
+	divs, err := wp.clients.FetchFinnhubDividends(ctx, tickerStr)
+	if err == nil && len(divs) > 0 {
+		var dbDivs []db.Dividend
+		for _, d := range divs {
+			dbDivs = append(dbDivs, db.Dividend{
+				ExDate:      d.ExDate,
+				PaymentDate: d.PaymentDate,
+				RecordDate:  d.RecordDate,
+				Amount:      d.Amount,
+				Currency:    d.Currency,
+				Frequency:   d.Frequency,
+			})
+		}
+		if err := wp.db.InsertDividendsBatch(ctx, compID, dbDivs); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_DIVIDENDS", "SUCCESS", fmt.Sprintf("Stored %d dividend events", len(dbDivs)))
+		}
+	}
+
+	splits, err := wp.clients.FetchFinnhubSplits(ctx, tickerStr)
+	if err == nil && len(splits) > 0 {
+		var dbSplits []db.StockSplit
+		for _, s := range splits {
+			dbSplits = append(dbSplits, db.StockSplit{
+				ExecutionDate: s.ExecutionDate,
+				FromFactor:    s.FromFactor,
+				ToFactor:      s.ToFactor,
+			})
+		}
+		if err := wp.db.InsertStockSplitsBatch(ctx, compID, dbSplits); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_SPLITS", "SUCCESS", fmt.Sprintf("Stored %d split events", len(dbSplits)))
+		}
+	}
+
+	// 8. Milestone 3: Historical EOD Time Series (Tiingo)
+	now := time.Now()
+	startDate := now.AddDate(-1, 0, 0).Format("2006-01-02")
+	endDate := now.Format("2006-01-02")
+	histPrices, err := wp.clients.FetchTiingoHistoricalPrices(ctx, tickerStr, startDate, endDate)
+	if err == nil && len(histPrices) > 0 {
+		var dbHist []db.HistoricalPrice
+		for _, p := range histPrices {
+			dbHist = append(dbHist, db.HistoricalPrice{
+				Date:          p.Date,
+				OpenPrice:     p.OpenPrice,
+				HighPrice:     p.HighPrice,
+				LowPrice:      p.LowPrice,
+				ClosePrice:    p.ClosePrice,
+				AdjClosePrice: p.AdjClosePrice,
+				Volume:        p.Volume,
+			})
+		}
+		if err := wp.db.InsertHistoricalPricesBatch(ctx, compID, dbHist); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_HISTORICAL_PRICES", "SUCCESS", fmt.Sprintf("Stored %d historical price bars", len(dbHist)))
+		}
+	} else if err != nil {
+		log.Printf("[Worker] Error fetching historical prices for %s: %v", tickerStr, err)
+	}
+
+	// 9. Milestone 4: Analyst Estimates & Earnings Calendars (Finnhub)
+	estimates, err := wp.clients.FetchFinnhubAnalystEstimates(ctx, tickerStr)
+	if err == nil && len(estimates) > 0 {
+		var dbEst []db.AnalystEstimate
+		for _, e := range estimates {
+			dbEst = append(dbEst, db.AnalystEstimate{
+				Period:     e.Period,
+				StrongBuy:  e.StrongBuy,
+				Buy:        e.Buy,
+				Hold:       e.Hold,
+				Sell:       e.Sell,
+				StrongSell: e.StrongSell,
+			})
+		}
+		if err := wp.db.InsertAnalystEstimatesBatch(ctx, compID, dbEst); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_ANALYST_ESTIMATES", "SUCCESS", fmt.Sprintf("Stored %d analyst estimate periods", len(dbEst)))
+		}
+	}
+
+	earnings, err := wp.clients.FetchFinnhubEarningsCalendar(ctx, tickerStr)
+	if err == nil && len(earnings) > 0 {
+		var dbEC []db.EarningsCalendar
+		for _, ec := range earnings {
+			dbEC = append(dbEC, db.EarningsCalendar{
+				Date:            ec.Date,
+				Quarter:         ec.Quarter,
+				Year:            ec.Year,
+				EPSEstimate:     ec.EPSEstimate,
+				EPSActual:       ec.EPSActual,
+				RevenueEstimate: ec.RevenueEstimate,
+				RevenueActual:   ec.RevenueActual,
+			})
+		}
+		if err := wp.db.InsertEarningsCalendarBatch(ctx, compID, dbEC); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_EARNINGS_CALENDAR", "SUCCESS", fmt.Sprintf("Stored %d earnings events", len(dbEC)))
+		}
+	}
+
+	// 10. Milestone 5: Company-specific News & Sentiment (Finnhub)
+	newsFrom := now.AddDate(0, 0, -30).Format("2006-01-02")
+	newsList, err := wp.clients.FetchFinnhubCompanyNews(ctx, tickerStr, newsFrom, endDate)
+	if err == nil && len(newsList) > 0 {
+		var dbNews []db.CompanyNews
+		for _, n := range newsList {
+			dbNews = append(dbNews, db.CompanyNews{
+				NewsID:         n.NewsID,
+				Headline:       n.Headline,
+				Summary:        n.Summary,
+				Source:         n.Source,
+				URL:            n.URL,
+				PublishedAt:    n.PublishedAt,
+				SentimentScore: n.SentimentScore,
+			})
+		}
+		if err := wp.db.InsertCompanyNewsBatch(ctx, compID, dbNews); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_COMPANY_NEWS", "SUCCESS", fmt.Sprintf("Stored %d news items", len(dbNews)))
+		}
+	}
+
+	// 11. Milestone 6: Insider Trading & Institutional Ownership (Finnhub / SEC EDGAR)
+	insiderTxs, err := wp.clients.FetchFinnhubInsiderTransactions(ctx, tickerStr)
+	if err == nil && len(insiderTxs) > 0 {
+		var dbInsider []db.InsiderTransaction
+		for _, it := range insiderTxs {
+			dbInsider = append(dbInsider, db.InsiderTransaction{
+				Name:             it.Name,
+				ShareCount:       it.ShareCount,
+				ChangeShares:     it.ChangeShares,
+				FilingDate:       it.FilingDate,
+				TransactionCode:  it.TransactionCode,
+				TransactionPrice: it.TransactionPrice,
+			})
+		}
+		if err := wp.db.InsertInsiderTransactionsBatch(ctx, compID, dbInsider); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_INSIDER_TRANSACTIONS", "SUCCESS", fmt.Sprintf("Stored %d insider transactions", len(dbInsider)))
+		}
+	}
+
+	instOwnership, err := wp.clients.FetchFinnhubInstitutionalOwnership(ctx, tickerStr)
+	if err == nil && len(instOwnership) > 0 {
+		var dbInst []db.InstitutionalOwnership
+		for _, io := range instOwnership {
+			dbInst = append(dbInst, db.InstitutionalOwnership{
+				InvestorName: io.InvestorName,
+				SharesHeld:   io.SharesHeld,
+				ChangeShares: io.ChangeShares,
+				Value:        io.Value,
+				Period:       io.Period,
+			})
+		}
+		if err := wp.db.InsertInstitutionalOwnershipBatch(ctx, compID, dbInst); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_INSTITUTIONAL_OWNERSHIP", "SUCCESS", fmt.Sprintf("Stored %d institutional ownership entries", len(dbInst)))
+		}
+	}
+
+	// 12. Milestone 7: Macroeconomic Context Data (FRED API)
+	yields, err := wp.clients.FetchFREDSeries(ctx, "DGS10", "10-Year Treasury Constant Maturity Rate")
+	if err == nil && len(yields) > 0 {
+		var dbMacro []db.MacroIndicator
+		for _, m := range yields {
+			dbMacro = append(dbMacro, db.MacroIndicator{
+				SeriesID:      m.SeriesID,
+				IndicatorName: m.IndicatorName,
+				Date:          m.Date,
+				Value:         m.Value,
+			})
+		}
+		if err := wp.db.InsertMacroIndicatorsBatch(ctx, dbMacro); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_MACRO_INDICATORS", "SUCCESS", fmt.Sprintf("Stored %d macro indicator data points for DGS10", len(dbMacro)))
+		}
+	}
+
+	cpi, err := wp.clients.FetchFREDSeries(ctx, "CPIAUCSL", "Consumer Price Index for All Urban Consumers")
+	if err == nil && len(cpi) > 0 {
+		var dbMacro []db.MacroIndicator
+		for _, m := range cpi {
+			dbMacro = append(dbMacro, db.MacroIndicator{
+				SeriesID:      m.SeriesID,
+				IndicatorName: m.IndicatorName,
+				Date:          m.Date,
+				Value:         m.Value,
+			})
+		}
+		if err := wp.db.InsertMacroIndicatorsBatch(ctx, dbMacro); err == nil {
+			_ = wp.db.LogAction(ctx, tickerStr, "FETCH_MACRO_INDICATORS", "SUCCESS", fmt.Sprintf("Stored %d macro indicator data points for CPIAUCSL", len(dbMacro)))
+		}
+	}
+
 	// Mark status completed
 	_ = wp.db.UpdateWatchitemStatus(ctx, tickerStr, "completed")
 	_ = wp.db.LogAction(ctx, tickerStr, "JOB_COMPLETE", "SUCCESS", fmt.Sprintf("Finished processing job for %s", tickerStr))

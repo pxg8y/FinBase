@@ -33,6 +33,7 @@ func main() {
 	tiingoAPIKey := os.Getenv("TIINGO_API_KEY")
 	twelveDataAPIKey := os.Getenv("TWELVE_DATA_API_KEY")
 	fmpAPIKey := os.Getenv("FMP_API_KEY")
+	fredAPIKey := os.Getenv("FRED_API_KEY")
 
 	log.Printf("Initializing FinBase FDAAE Engine...")
 	database, err := db.NewDB(dbPath)
@@ -42,6 +43,7 @@ func main() {
 	defer database.Close()
 
 	clientMgr := clients.NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey, twelveDataAPIKey, fmpAPIKey)
+	clientMgr.SetFREDAPIKey(fredAPIKey)
 	broker := api.NewSSEBroker()
 
 	wp := worker.NewWorkerPool(database, clientMgr, broker, 0)
