@@ -8,8 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"finbase/clients"
 	"finbase/db"
 	"finbase/web"
+	"finbase/worker"
 )
 
 // SSEEvent represents a Server-Sent Event payload.
@@ -141,11 +143,13 @@ func (b *SSEBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Server holds API router dependencies
 type Server struct {
-	db        *db.DB
-	broker    *SSEBroker
-	mux       *http.ServeMux
-	apiKey    string
-	jwtSecret []byte
+	db         *db.DB
+	broker     *SSEBroker
+	clientMgr  *clients.ClientManager
+	workerPool *worker.WorkerPool
+	mux        *http.ServeMux
+	apiKey     string
+	jwtSecret  []byte
 }
 
 func NewServer(database *db.DB, broker *SSEBroker, apiKey string, jwtSecret []byte) *Server {
@@ -160,6 +164,14 @@ func NewServer(database *db.DB, broker *SSEBroker, apiKey string, jwtSecret []by
 	return s
 }
 
+func (s *Server) SetClientManager(clientMgr *clients.ClientManager) {
+	s.clientMgr = clientMgr
+}
+
+func (s *Server) SetWorkerPool(workerPool *worker.WorkerPool) {
+	s.workerPool = workerPool
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
@@ -172,6 +184,7 @@ func (s *Server) routes() {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	apiMux.HandleFunc("/api/data/company/", s.handleCompanyData)
+	apiMux.HandleFunc("/api/status", s.handleStatus)
 	apiMux.Handle("/api/sse", s.broker)
 
 	s.mux.Handle("/api/", AuthMiddleware(s.apiKey, s.jwtSecret, apiMux))
@@ -282,4 +295,45 @@ func (s *Server) handleCompanyData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(data)
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var providerStatuses []clients.APIProviderStatus
+	if s.clientMgr != nil {
+		providerStatuses = s.clientMgr.GetProviderStatuses()
+	} else {
+		providerStatuses = []clients.APIProviderStatus{}
+	}
+
+	var workerStatus worker.WorkerPoolStatus
+	if s.workerPool != nil {
+		workerStatus = s.workerPool.GetStatus()
+	} else {
+		workerStatus = worker.WorkerPoolStatus{CurrentJobs: []worker.ActiveJob{}}
+	}
+
+	jobSummary, err := s.db.GetJobStatusSummary(r.Context())
+	if err != nil {
+		log.Printf("Error fetching job summary: %v", err)
+	}
+
+	recentHistory, err := s.db.GetRecentActionHistory(r.Context(), 50)
+	if err != nil {
+		log.Printf("Error fetching action history: %v", err)
+		recentHistory = []db.ActionHistory{}
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"providers":        providerStatuses,
+		"worker_pool":      workerStatus,
+		"job_summary":      jobSummary,
+		"recent_activity":  recentHistory,
+		"server_time":      time.Now(),
+	})
 }

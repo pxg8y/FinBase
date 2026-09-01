@@ -107,4 +107,32 @@ func TestAPIWatchlistAndCompany(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Expected status 200 OK, got %d", rec.Code)
 	}
+
+	// Test GET /api/status
+	req = httptest.NewRequest("GET", "/api/status", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK for /api/status, got %d", rec.Code)
+	}
+
+	var statusResp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("Failed to decode status response: %v", err)
+	}
+
+	if _, ok := statusResp["providers"]; !ok {
+		t.Errorf("Expected 'providers' in status response")
+	}
+	if _, ok := statusResp["worker_pool"]; !ok {
+		t.Errorf("Expected 'worker_pool' in status response")
+	}
+	if _, ok := statusResp["job_summary"]; !ok {
+		t.Errorf("Expected 'job_summary' in status response")
+	}
+	if _, ok := statusResp["recent_activity"]; !ok {
+		t.Errorf("Expected 'recent_activity' in status response")
+	}
 }

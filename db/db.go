@@ -20,11 +20,21 @@ type DB struct {
 
 // Models
 type Watchitem struct {
-	ID          int64     `json:"id"`
-	Ticker      string    `json:"ticker"`
-	Priority    int       `json:"priority"`
-	Status      string    `json:"status"`
-	LastUpdated time.Time `json:"last_updated"`
+	ID             int64     `json:"id"`
+	Ticker         string    `json:"ticker"`
+	Priority       int       `json:"priority"`
+	Status         string    `json:"status"`
+	LastUpdated    time.Time `json:"last_updated"`
+	NextUpdateTime time.Time `json:"next_update_time"`
+}
+
+type JobStatusSummary struct {
+	Pending    int `json:"pending"`
+	Queued     int `json:"queued"`
+	Processing int `json:"processing"`
+	Completed  int `json:"completed"`
+	Error      int `json:"error"`
+	Total      int `json:"total"`
 }
 
 type Company struct {
@@ -674,9 +684,69 @@ func (db *DB) GetWatchlist(ctx context.Context) ([]Watchitem, error) {
 		if item.LastUpdated.IsZero() {
 			item.LastUpdated, _ = time.Parse(time.RFC3339, lastUpdatedStr)
 		}
+		if !item.LastUpdated.IsZero() {
+			item.NextUpdateTime = item.LastUpdated.Add(5 * time.Minute)
+		} else {
+			item.NextUpdateTime = time.Now()
+		}
 		list = append(list, item)
 	}
 	return list, nil
+}
+
+func (db *DB) GetJobStatusSummary(ctx context.Context) (JobStatusSummary, error) {
+	rows, err := db.ReadDB.QueryContext(ctx, "SELECT status, COUNT(*) FROM watchlist GROUP BY status")
+	if err != nil {
+		return JobStatusSummary{}, err
+	}
+	defer rows.Close()
+
+	var summary JobStatusSummary
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err == nil {
+			summary.Total += count
+			switch strings.ToLower(status) {
+			case "pending":
+				summary.Pending = count
+			case "queued":
+				summary.Queued = count
+			case "processing":
+				summary.Processing = count
+			case "completed":
+				summary.Completed = count
+			case "error":
+				summary.Error = count
+			}
+		}
+	}
+	return summary, nil
+}
+
+func (db *DB) GetRecentActionHistory(ctx context.Context, limit int) ([]ActionHistory, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.ReadDB.QueryContext(ctx, "SELECT id, timestamp, ticker, action_type, status, message FROM action_history ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var history []ActionHistory
+	for rows.Next() {
+		var h ActionHistory
+		var ts string
+		if err := rows.Scan(&h.ID, &ts, &h.Ticker, &h.ActionType, &h.Status, &h.Message); err == nil {
+			h.Timestamp, _ = time.Parse("2006-01-02 15:04:05", ts)
+			if h.Timestamp.IsZero() {
+				h.Timestamp, _ = time.Parse(time.RFC3339, ts)
+			}
+			history = append(history, h)
+		}
+	}
+	return history, nil
 }
 
 func (db *DB) AddWatchitem(ctx context.Context, ticker string, priority int) (*Watchitem, error) {

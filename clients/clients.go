@@ -54,6 +54,19 @@ func (cb *CircuitBreaker) State() CircuitState {
 	return cb.state
 }
 
+func (cb *CircuitBreaker) Status() (string, int) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	stateStr := "closed"
+	switch cb.state {
+	case StateOpen:
+		stateStr = "open"
+	case StateHalfOpen:
+		stateStr = "half-open"
+	}
+	return stateStr, cb.failureCount
+}
+
 func (cb *CircuitBreaker) Execute(fn func() error) error {
 	cb.mu.Lock()
 	now := time.Now()
@@ -168,6 +181,41 @@ func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey,
 
 func (cm *ClientManager) SetFREDAPIKey(key string) {
 	cm.fredAPIKey = key
+}
+
+type APIProviderStatus struct {
+	Name          string `json:"name"`
+	KeyConfigured bool   `json:"key_configured"`
+	CircuitState  string `json:"circuit_state"`
+	FailureCount  int    `json:"failure_count"`
+}
+
+func (cm *ClientManager) GetProviderStatuses() []APIProviderStatus {
+	providers := []struct {
+		name          string
+		keyConfigured bool
+		cb            *CircuitBreaker
+	}{
+		{"SEC EDGAR", cm.secUserAgent != "", cm.secCB},
+		{"Finnhub", cm.finnhubAPIKey != "", cm.finnhubCB},
+		{"OpenFIGI", cm.openFIGIAPIKey != "", cm.openFIGICB},
+		{"Tiingo", cm.tiingoAPIKey != "", cm.tiingoCB},
+		{"Twelve Data", cm.twelveDataAPIKey != "", cm.twelveDataCB},
+		{"Financial Modeling Prep (FMP)", cm.fmpAPIKey != "", cm.fmpCB},
+		{"FRED Macro", cm.fredAPIKey != "", cm.fredCB},
+	}
+
+	statuses := make([]APIProviderStatus, 0, len(providers))
+	for _, p := range providers {
+		stateStr, failures := p.cb.Status()
+		statuses = append(statuses, APIProviderStatus{
+			Name:          p.name,
+			KeyConfigured: p.keyConfigured,
+			CircuitState:  stateStr,
+			FailureCount:  failures,
+		})
+	}
+	return statuses
 }
 
 // Structs for OpenFIGI API
