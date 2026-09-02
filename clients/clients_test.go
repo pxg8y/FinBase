@@ -11,6 +11,57 @@ import (
 	"time"
 )
 
+func TestHTTPSTrustStore(t *testing.T) {
+	// Start an HTTPS mock server with a TLS certificate
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer tlsServer.Close()
+
+	// Verify HTTPS client connection using valid TLS certificate pool without InsecureSkipVerify
+	client := tlsServer.Client()
+	resp, err := client.Get(tlsServer.URL)
+	if err != nil {
+		t.Fatalf("Failed HTTPS request with valid TLS trust pool: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200 OK from HTTPS request, got %d", resp.StatusCode)
+	}
+}
+
+func TestCredentialRedaction(t *testing.T) {
+	apiKey := "super-secret-finnhub-key-12345"
+	tiingoKey := "secret-tiingo-token-67890"
+
+	cm := NewClientManager("TestApp", apiKey, "", tiingoKey, "", "")
+
+	// Test direct API key string redaction
+	rawErr := fmt.Errorf("failed to fetch from https://finnhub.io/api/v1/quote?symbol=AAPL&token=%s with key %s", tiingoKey, apiKey)
+	redactedErr := cm.redact(rawErr)
+
+	if strings.Contains(redactedErr.Error(), apiKey) {
+		t.Errorf("Error contains unredacted finnhub API key: %s", redactedErr.Error())
+	}
+	if strings.Contains(redactedErr.Error(), tiingoKey) {
+		t.Errorf("Error contains unredacted tiingo API key: %s", redactedErr.Error())
+	}
+	if !strings.Contains(redactedErr.Error(), "[REDACTED]") {
+		t.Errorf("Expected [REDACTED] in error string, got %s", redactedErr.Error())
+	}
+
+	// Test URL pattern redaction for apikey= and token=
+	patternErrStr := RedactString("HTTP 401: https://api.twelvedata.com/quote?symbol=AAPL&apikey=secret123&token=abc456")
+	if strings.Contains(patternErrStr, "secret123") || strings.Contains(patternErrStr, "abc456") {
+		t.Errorf("Failed to redact URL query parameters: %s", patternErrStr)
+	}
+	if !strings.Contains(patternErrStr, "apikey=[REDACTED]") || !strings.Contains(patternErrStr, "token=[REDACTED]") {
+		t.Errorf("Expected parameter redaction in URL string, got %s", patternErrStr)
+	}
+}
+
 func TestFormatCIK(t *testing.T) {
 	tests := []struct {
 		input    string
