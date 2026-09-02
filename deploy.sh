@@ -120,9 +120,21 @@ fi
 
 # 2. Build Binary & Docker Image
 IMAGE_NAME="finbase:latest"
-echo "🔨 Compiling static Go binary and copying ca-certificates..."
+echo "🔨 Compiling static Go binary and preparing CA certificates..."
 CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o fdaae main.go
-cp /etc/ssl/certs/ca-certificates.crt ./ca-certificates.crt
+
+if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    cp /etc/ssl/certs/ca-certificates.crt ./ca-certificates.crt
+elif [ -f /etc/pki/tls/certs/ca-bundle.crt ]; then
+    cp /etc/pki/tls/certs/ca-bundle.crt ./ca-certificates.crt
+elif [ -f /etc/ssl/ca-bundle.pem ]; then
+    cp /etc/ssl/ca-bundle.pem ./ca-certificates.crt
+elif [ -f /etc/ssl/cert.pem ]; then
+    cp /etc/ssl/cert.pem ./ca-certificates.crt
+else
+    echo "📥 Downloading Mozilla CA certificates bundle..."
+    curl -sf https://curl.se/ca/cacert.pem -o ./ca-certificates.crt || touch ./ca-certificates.crt
+fi
 
 echo "🔨 Building Docker image $IMAGE_NAME..."
 docker build -t "$IMAGE_NAME" .

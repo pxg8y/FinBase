@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,35 @@ import (
 	"go.uber.org/ratelimit"
 	"golang.org/x/time/rate"
 )
+
+var paramRedactRegex = regexp.MustCompile(`(?i)(apikey|api_key|token)=([^&\s]+)`)
+
+func RedactString(s string, keys ...string) string {
+	if s == "" {
+		return ""
+	}
+	for _, key := range keys {
+		if key != "" && len(key) >= 2 {
+			s = strings.ReplaceAll(s, key, "[REDACTED]")
+		}
+	}
+	s = paramRedactRegex.ReplaceAllString(s, "$1=[REDACTED]")
+	return s
+}
+
+func RedactError(err error, keys ...string) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s", RedactString(err.Error(), keys...))
+}
+
+func (cm *ClientManager) redact(err error) error {
+	if err == nil {
+		return nil
+	}
+	return RedactError(err, cm.finnhubAPIKey, cm.openFIGIAPIKey, cm.tiingoAPIKey, cm.twelveDataAPIKey, cm.fmpAPIKey, cm.fredAPIKey)
+}
 
 // Global sync.Pool for bytes.Buffer reuse during JSON parsing
 var BufferPool = sync.Pool{
@@ -467,7 +497,7 @@ func (cm *ClientManager) FetchOpenFIGI(ctx context.Context, ticker string) (*Ope
 		result = &results[0]
 		return nil
 	})
-	return result, err
+	return result, cm.redact(err)
 }
 
 // SEC EDGAR API Structs
@@ -537,7 +567,7 @@ func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCom
 		facts = &f
 		return nil
 	})
-	return facts, err
+	return facts, cm.redact(err)
 }
 
 // Finnhub API Structs
@@ -723,7 +753,7 @@ func (cm *ClientManager) FetchFinnhubValuationRatios(ctx context.Context, ticker
 		}
 		return nil
 	})
-	return ratios, err
+	return ratios, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubQuote(ctx context.Context, ticker string) (*FinnhubQuote, error) {
@@ -770,17 +800,17 @@ func (cm *ClientManager) FetchFinnhubQuote(ctx context.Context, ticker string) (
 		quote = &q
 		return nil
 	})
-	return quote, err
+	return quote, cm.redact(err)
 }
 
 // FetchFinnhubMarketData wraps FetchFinnhubQuote to implement MarketDataFetcher.
 func (cm *ClientManager) FetchFinnhubMarketData(ctx context.Context, ticker string) (*MarketQuote, error) {
 	q, err := cm.FetchFinnhubQuote(ctx, ticker)
 	if err != nil {
-		return nil, err
+		return nil, cm.redact(err)
 	}
 	if q == nil || q.CurrentPrice == 0 {
-		return nil, fmt.Errorf("finnhub returned empty market data for ticker %s", ticker)
+		return nil, cm.redact(fmt.Errorf("finnhub returned empty market data for ticker %s", ticker))
 	}
 	return &MarketQuote{
 		CurrentPrice:  q.CurrentPrice,
@@ -870,7 +900,7 @@ func (cm *ClientManager) FetchFinnhubDividends(ctx context.Context, ticker strin
 		}
 		return nil
 	})
-	return divs, err
+	return divs, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubAnalystEstimates(ctx context.Context, ticker string) ([]AnalystEstimateItem, error) {
@@ -934,7 +964,7 @@ func (cm *ClientManager) FetchFinnhubAnalystEstimates(ctx context.Context, ticke
 		}
 		return nil
 	})
-	return estimates, err
+	return estimates, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubEarningsCalendar(ctx context.Context, ticker string) ([]EarningsCalendarItem, error) {
@@ -1002,7 +1032,7 @@ func (cm *ClientManager) FetchFinnhubEarningsCalendar(ctx context.Context, ticke
 		}
 		return nil
 	})
-	return events, err
+	return events, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubInstitutionalOwnership(ctx context.Context, ticker string) ([]InstitutionalOwnershipItem, error) {
@@ -1066,7 +1096,7 @@ func (cm *ClientManager) FetchFinnhubInstitutionalOwnership(ctx context.Context,
 		}
 		return nil
 	})
-	return holdings, err
+	return holdings, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubInsiderTransactions(ctx context.Context, ticker string) ([]InsiderTransactionItem, error) {
@@ -1132,7 +1162,7 @@ func (cm *ClientManager) FetchFinnhubInsiderTransactions(ctx context.Context, ti
 		}
 		return nil
 	})
-	return txs, err
+	return txs, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFREDSeries(ctx context.Context, seriesID, indicatorName string) ([]MacroIndicatorItem, error) {
@@ -1195,7 +1225,7 @@ func (cm *ClientManager) FetchFREDSeries(ctx context.Context, seriesID, indicato
 		}
 		return nil
 	})
-	return indicators, err
+	return indicators, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubCompanyNews(ctx context.Context, ticker, from, to string) ([]CompanyNewsItem, error) {
@@ -1264,7 +1294,7 @@ func (cm *ClientManager) FetchFinnhubCompanyNews(ctx context.Context, ticker, fr
 		}
 		return nil
 	})
-	return newsList, err
+	return newsList, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubSplits(ctx context.Context, ticker string) ([]StockSplitItem, error) {
@@ -1322,7 +1352,7 @@ func (cm *ClientManager) FetchFinnhubSplits(ctx context.Context, ticker string) 
 		}
 		return nil
 	})
-	return splits, err
+	return splits, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchTiingoHistoricalPrices(ctx context.Context, ticker string, startDate, endDate string) ([]HistoricalPriceItem, error) {
@@ -1406,7 +1436,7 @@ func (cm *ClientManager) FetchTiingoHistoricalPrices(ctx context.Context, ticker
 		}
 		return nil
 	})
-	return prices, err
+	return prices, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchTiingoMarketData(ctx context.Context, ticker string) (*MarketQuote, error) {
@@ -1469,7 +1499,7 @@ func (cm *ClientManager) FetchTiingoMarketData(ctx context.Context, ticker strin
 		}
 		return nil
 	})
-	return quote, err
+	return quote, cm.redact(err)
 }
 
 // Twelve Data API Structs
@@ -1596,7 +1626,7 @@ func (cm *ClientManager) FetchMarketDataWaterfall(ctx context.Context, ticker st
 		errs = append(errs, "Twelve Data: zero current price")
 	}
 
-	return nil, fmt.Errorf("all market data fetchers failed for %s: [%s]", ticker, strings.Join(errs, "; "))
+	return nil, cm.redact(fmt.Errorf("all market data fetchers failed for %s: [%s]", ticker, strings.Join(errs, "; ")))
 }
 
 // FMP API Structs
@@ -1655,7 +1685,7 @@ func (cm *ClientManager) FetchFMPIncomeStatement(ctx context.Context, ticker str
 
 		return nil
 	})
-	return stmts, err
+	return stmts, cm.redact(err)
 }
 
 func (cm *ClientManager) FetchFinnhubProfile(ctx context.Context, ticker string) (*FinnhubProfile, error) {
@@ -1702,7 +1732,7 @@ func (cm *ClientManager) FetchFinnhubProfile(ctx context.Context, ticker string)
 		profile = &p
 		return nil
 	})
-	return profile, err
+	return profile, cm.redact(err)
 }
 
 // CIK Lookup helper from SEC ticker-to-CIK mapping if needed
@@ -1756,5 +1786,5 @@ func (cm *ClientManager) FetchSECCIKForTicker(ctx context.Context, ticker string
 
 		return fmt.Errorf("CIK not found for ticker %s", ticker)
 	})
-	return cik, err
+	return cik, cm.redact(err)
 }
