@@ -167,6 +167,7 @@ type ClientManager struct {
 	fmpCB         *CircuitBreaker
 	fredCB        *CircuitBreaker
 
+	keysMu           sync.RWMutex
 	secUserAgent     string
 	finnhubAPIKey    string
 	openFIGIAPIKey   string
@@ -209,8 +210,88 @@ func NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey,
 	}
 }
 
+func (cm *ClientManager) SetSECUserAgent(ua string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
+	cm.secUserAgent = ua
+}
+
+func (cm *ClientManager) SetFinnhubAPIKey(key string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
+	cm.finnhubAPIKey = key
+}
+
+func (cm *ClientManager) SetOpenFIGIAPIKey(key string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
+	cm.openFIGIAPIKey = key
+}
+
+func (cm *ClientManager) SetTiingoAPIKey(key string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
+	cm.tiingoAPIKey = key
+}
+
+func (cm *ClientManager) SetTwelveDataAPIKey(key string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
+	cm.twelveDataAPIKey = key
+}
+
+func (cm *ClientManager) SetFMPAPIKey(key string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
+	cm.fmpAPIKey = key
+}
+
 func (cm *ClientManager) SetFREDAPIKey(key string) {
+	cm.keysMu.Lock()
+	defer cm.keysMu.Unlock()
 	cm.fredAPIKey = key
+}
+
+func (cm *ClientManager) GetSECUserAgent() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.secUserAgent
+}
+
+func (cm *ClientManager) GetFinnhubAPIKey() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.finnhubAPIKey
+}
+
+func (cm *ClientManager) GetOpenFIGIAPIKey() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.openFIGIAPIKey
+}
+
+func (cm *ClientManager) GetTiingoAPIKey() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.tiingoAPIKey
+}
+
+func (cm *ClientManager) GetTwelveDataAPIKey() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.twelveDataAPIKey
+}
+
+func (cm *ClientManager) GetFMPAPIKey() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.fmpAPIKey
+}
+
+func (cm *ClientManager) GetFREDAPIKey() string {
+	cm.keysMu.RLock()
+	defer cm.keysMu.RUnlock()
+	return cm.fredAPIKey
 }
 
 type APIProviderStatus struct {
@@ -221,18 +302,28 @@ type APIProviderStatus struct {
 }
 
 func (cm *ClientManager) GetProviderStatuses() []APIProviderStatus {
+	cm.keysMu.RLock()
+	secUA := cm.secUserAgent
+	finnhubKey := cm.finnhubAPIKey
+	figiKey := cm.openFIGIAPIKey
+	tiingoKey := cm.tiingoAPIKey
+	twelveKey := cm.twelveDataAPIKey
+	fmpKey := cm.fmpAPIKey
+	fredKey := cm.fredAPIKey
+	cm.keysMu.RUnlock()
+
 	providers := []struct {
 		name          string
 		keyConfigured bool
 		cb            *CircuitBreaker
 	}{
-		{"SEC EDGAR", cm.secUserAgent != "", cm.secCB},
-		{"Finnhub", cm.finnhubAPIKey != "", cm.finnhubCB},
-		{"OpenFIGI", cm.openFIGIAPIKey != "", cm.openFIGICB},
-		{"Tiingo", cm.tiingoAPIKey != "", cm.tiingoCB},
-		{"Twelve Data", cm.twelveDataAPIKey != "", cm.twelveDataCB},
-		{"Financial Modeling Prep (FMP)", cm.fmpAPIKey != "", cm.fmpCB},
-		{"FRED Macro", cm.fredAPIKey != "", cm.fredCB},
+		{"SEC EDGAR", secUA != "", cm.secCB},
+		{"Finnhub", finnhubKey != "", cm.finnhubCB},
+		{"OpenFIGI", figiKey != "", cm.openFIGICB},
+		{"Tiingo", tiingoKey != "", cm.tiingoCB},
+		{"Twelve Data", twelveKey != "", cm.twelveDataCB},
+		{"Financial Modeling Prep (FMP)", fmpKey != "", cm.fmpCB},
+		{"FRED Macro", fredKey != "", cm.fredCB},
 	}
 
 	statuses := make([]APIProviderStatus, 0, len(providers))
@@ -246,6 +337,84 @@ func (cm *ClientManager) GetProviderStatuses() []APIProviderStatus {
 		})
 	}
 	return statuses
+}
+
+func (cm *ClientManager) TestKeyFunctionality(ctx context.Context, serviceName string) (bool, string) {
+	switch strings.ToLower(serviceName) {
+	case "sec_user_agent", "sec", "sec edgar":
+		ua := cm.GetSECUserAgent()
+		if ua == "" {
+			return false, "User-Agent is not set"
+		}
+		_, err := cm.FetchSECFacts(ctx, "0000320193")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "SEC EDGAR API is functional"
+
+	case "finnhub_api_key", "finnhub":
+		if cm.GetFinnhubAPIKey() == "" {
+			return false, "API key is not set"
+		}
+		_, err := cm.FetchFinnhubQuote(ctx, "AAPL")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "Finnhub API is functional"
+
+	case "openfigi_api_key", "openfigi":
+		if cm.GetOpenFIGIAPIKey() == "" {
+			return false, "API key is not set"
+		}
+		_, err := cm.FetchOpenFIGI(ctx, "AAPL")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "OpenFIGI API is functional"
+
+	case "tiingo_api_key", "tiingo":
+		if cm.GetTiingoAPIKey() == "" {
+			return false, "API key is not set"
+		}
+		_, err := cm.FetchTiingoMarketData(ctx, "AAPL")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "Tiingo API is functional"
+
+	case "twelve_data_api_key", "twelvedata", "twelve data":
+		if cm.GetTwelveDataAPIKey() == "" {
+			return false, "API key is not set"
+		}
+		_, err := cm.FetchTwelveDataMarketData(ctx, "AAPL")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "Twelve Data API is functional"
+
+	case "fmp_api_key", "fmp", "financial modeling prep":
+		if cm.GetFMPAPIKey() == "" {
+			return false, "API key is not set"
+		}
+		_, err := cm.FetchFMPIncomeStatement(ctx, "AAPL")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "FMP API is functional"
+
+	case "fred_api_key", "fred", "fred macro":
+		if cm.GetFREDAPIKey() == "" {
+			return false, "API key is not set"
+		}
+		_, err := cm.FetchFREDSeries(ctx, "DGS10", "10-Year Treasury")
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, "FRED API is functional"
+
+	default:
+		return false, fmt.Sprintf("Unknown service: %s", serviceName)
+	}
 }
 
 // Structs for OpenFIGI API

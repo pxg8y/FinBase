@@ -258,6 +258,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>API & Key Status Overview</h2>
+                    <button class="btn-sm" onclick="openKeyManageModal()">Manage API Keys</button>
                 </div>
                 <table>
                     <thead>
@@ -370,6 +371,47 @@
         </div>
     </div>
 
+    <!-- Key Management Modal -->
+    <div id="key-modal" class="modal">
+        <div class="modal-content" style="max-width: 900px;">
+            <span class="close-btn" onclick="closeKeyManageModal()">&times;</span>
+            <h2>API Key Management</h2>
+            <p style="color: var(--muted-color); font-size: 0.9rem;">Set or delete service API keys in SQLite DB. Keys are never exposed once saved.</p>
+
+            <table style="margin-bottom: 20px;">
+                <thead>
+                    <tr>
+                        <th>Key Name</th>
+                        <th>Status</th>
+                        <th>Source</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="key-manage-body">
+                    <!-- Populated dynamically -->
+                </tbody>
+            </table>
+
+            <h3>Update / Save Key</h3>
+            <form id="key-save-form" class="form-group" style="margin-top: 10px;">
+                <select id="key-select" required style="padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                    <option value="">Select Key...</option>
+                    <option value="API_KEY">API_KEY (System Auth Key)</option>
+                    <option value="SEC_USER_AGENT">SEC_USER_AGENT</option>
+                    <option value="FINNHUB_API_KEY">FINNHUB_API_KEY</option>
+                    <option value="OPENFIGI_API_KEY">OPENFIGI_API_KEY</option>
+                    <option value="TIINGO_API_KEY">TIINGO_API_KEY</option>
+                    <option value="TWELVE_DATA_API_KEY">TWELVE_DATA_API_KEY</option>
+                    <option value="FMP_API_KEY">FMP_API_KEY</option>
+                    <option value="FRED_API_KEY">FRED_API_KEY</option>
+                </select>
+                <input type="password" id="key-value-input" placeholder="Enter key value" required style="flex: 2;">
+                <button type="submit">Save Key</button>
+            </form>
+            <div id="key-operation-result" style="margin-top: 10px; font-size: 0.9rem;"></div>
+        </div>
+    </div>
+
     <script>
         const watchlistBody = document.getElementById('watchlist-body');
         const companyDetail = document.getElementById('company-detail');
@@ -380,6 +422,10 @@
         const activeWorkersList = document.getElementById('active-workers-list');
         const workerModal = document.getElementById('worker-modal');
         const modalWorkerBody = document.getElementById('modal-worker-body');
+        const keyModal = document.getElementById('key-modal');
+        const keyManageBody = document.getElementById('key-manage-body');
+        const keySaveForm = document.getElementById('key-save-form');
+        const keyOperationResult = document.getElementById('key-operation-result');
 
         let jwtToken = null;
         let sseSource = null;
@@ -710,6 +756,111 @@
 
         function closeWorkerModal() {
             workerModal.style.display = 'none';
+        }
+
+        async function fetchEnvKeys() {
+            try {
+                const res = await fetchWithAuth('/api/env/keys');
+                if (!res.ok) return;
+                const keys = await res.json();
+                renderKeyManageTable(keys || []);
+            } catch (err) {
+                console.error('Failed to fetch env keys:', err);
+            }
+        }
+
+        function renderKeyManageTable(keys) {
+            keyManageBody.innerHTML = '';
+            keys.forEach(k => {
+                const statusBadge = k.configured
+                    ? `<span class="badge badge-completed">Set</span>`
+                    : `<span class="badge badge-pending">Not Set</span>`;
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>${k.name}</strong></td>
+                    <td>${statusBadge}</td>
+                    <td><small style="color:var(--muted-color);">${k.source || 'none'}</small></td>
+                    <td>
+                        <button class="btn-sm" onclick="testKey('${k.name}')">Test</button>
+                        ${k.configured ? `<button class="btn-sm btn-danger" onclick="deleteKey('${k.name}')">Delete</button>` : ''}
+                    </td>
+                `;
+                keyManageBody.appendChild(tr);
+            });
+        }
+
+        async function testKey(name) {
+            keyOperationResult.innerHTML = `<span style="color:var(--warning-color);">Testing ${name}...</span>`;
+            try {
+                const res = await fetchWithAuth('/api/env/keys/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (data.functional) {
+                    keyOperationResult.innerHTML = `<span style="color:var(--success-color);">✅ ${name}: ${data.status_message}</span>`;
+                } else {
+                    keyOperationResult.innerHTML = `<span style="color:var(--danger-color);">❌ ${name}: ${data.status_message}</span>`;
+                }
+            } catch (err) {
+                keyOperationResult.innerHTML = `<span style="color:var(--danger-color);">Failed testing key: ${err.message}</span>`;
+            }
+        }
+
+        async function deleteKey(name) {
+            if (!confirm(`Are you sure you want to delete/reset ${name}?`)) return;
+            try {
+                const res = await fetchWithAuth(`/api/env/keys?name=${encodeURIComponent(name)}`, {
+                    method: 'DELETE'
+                });
+                if (res.ok) {
+                    keyOperationResult.innerHTML = `<span style="color:var(--success-color);">Deleted key ${name}.</span>`;
+                    fetchEnvKeys();
+                    fetchSystemStatus();
+                } else {
+                    const errData = await res.json();
+                    keyOperationResult.innerHTML = `<span style="color:var(--danger-color);">Delete failed: ${errData.error}</span>`;
+                }
+            } catch (err) {
+                keyOperationResult.innerHTML = `<span style="color:var(--danger-color);">Delete error: ${err.message}</span>`;
+            }
+        }
+
+        keySaveForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('key-select').value;
+            const value = document.getElementById('key-value-input').value.trim();
+            if (!name || !value) return;
+
+            try {
+                const res = await fetchWithAuth('/api/env/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, value })
+                });
+                if (res.ok) {
+                    document.getElementById('key-value-input').value = '';
+                    keyOperationResult.innerHTML = `<span style="color:var(--success-color);">Successfully saved ${name}!</span>`;
+                    fetchEnvKeys();
+                    fetchSystemStatus();
+                } else {
+                    const errData = await res.json();
+                    keyOperationResult.innerHTML = `<span style="color:var(--danger-color);">Save failed: ${errData.error}</span>`;
+                }
+            } catch (err) {
+                keyOperationResult.innerHTML = `<span style="color:var(--danger-color);">Save error: ${err.message}</span>`;
+            }
+        });
+
+        function openKeyManageModal() {
+            fetchEnvKeys();
+            keyModal.style.display = 'block';
+        }
+
+        function closeKeyManageModal() {
+            keyModal.style.display = 'none';
         }
 
         async function setupSSE() {

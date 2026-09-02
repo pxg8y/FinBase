@@ -2,13 +2,125 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"finbase/clients"
 	"finbase/db"
+	"finbase/env"
 )
+
+func TestAPIEnvKeysManagement(t *testing.T) {
+	database, err := db.NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize DB: %v", err)
+	}
+	defer database.Close()
+
+	clientMgr := clients.NewClientManager("", "", "", "", "", "")
+	broker := NewSSEBroker()
+	apiKey := "test-initial-api-key"
+	jwtSecret := []byte("test-jwt-secret")
+
+	envSvc := env.NewEnvService(database, clientMgr, apiKey)
+	if err := envSvc.LoadAndApplyKeys(context.Background()); err != nil {
+		t.Fatalf("LoadAndApplyKeys error: %v", err)
+	}
+
+	server := NewServer(database, broker, apiKey, jwtSecret)
+	server.SetEnvService(envSvc)
+	server.SetClientManager(clientMgr)
+
+	testServer := httptest.NewServer(server)
+	defer testServer.Close()
+
+	// 1. GET /api/env/keys without auth -> 401
+	resp, err := http.Get(testServer.URL + "/api/env/keys")
+	if err != nil {
+		t.Fatalf("HTTP GET error: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected 401 Unauthorized, got %d", resp.StatusCode)
+	}
+
+	// 2. GET /api/env/keys with API Key -> 200
+	req, _ := http.NewRequest("GET", testServer.URL+"/api/env/keys", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP GET with key error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var keyInfos []env.KeyInfo
+	json.NewDecoder(resp.Body).Decode(&keyInfos)
+	resp.Body.Close()
+
+	if len(keyInfos) == 0 {
+		t.Errorf("Expected key status list, got empty")
+	}
+
+	// 3. POST /api/env/keys to change API_KEY -> 200
+	setPayload := `{"name":"API_KEY","value":"updated-dynamic-api-key"}`
+	req, _ = http.NewRequest("POST", testServer.URL+"/api/env/keys", strings.NewReader(setPayload))
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP POST set key error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 OK on setting API key, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 4. Verify old API_KEY rejected and new API_KEY accepted
+	req, _ = http.NewRequest("GET", testServer.URL+"/api/env/keys", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected old API key to be rejected (401), got %d", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequest("GET", testServer.URL+"/api/env/keys", nil)
+	req.Header.Set("X-API-Key", "updated-dynamic-api-key")
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected new API key to be accepted (200), got %d", resp.StatusCode)
+	}
+
+	// 5. POST /api/env/keys/test endpoint
+	testPayload := `{"name":"FINNHUB_API_KEY"}`
+	req, _ = http.NewRequest("POST", testServer.URL+"/api/env/keys/test", strings.NewReader(testPayload))
+	req.Header.Set("X-API-Key", "updated-dynamic-api-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP POST test key error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 OK on key test endpoint, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 6. DELETE /api/env/keys
+	req, _ = http.NewRequest("DELETE", testServer.URL+"/api/env/keys?name=FINNHUB_API_KEY", nil)
+	req.Header.Set("X-API-Key", "updated-dynamic-api-key")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP DELETE key error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200 OK on key delete, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
 
 func TestAPIWatchlistAndCompany(t *testing.T) {
 	database, err := db.NewDB(":memory:")

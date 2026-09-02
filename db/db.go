@@ -509,6 +509,12 @@ func (db *DB) Migrate() error {
 		value REAL NOT NULL,
 		UNIQUE(series_id, date) ON CONFLICT REPLACE
 	);
+
+	CREATE TABLE IF NOT EXISTS api_keys (
+		key_name TEXT PRIMARY KEY,
+		key_value TEXT NOT NULL,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	return db.WithTx(context.Background(), func(exec Execer) error {
 		if _, err := exec.ExecContext(context.Background(), schema); err != nil {
@@ -855,6 +861,54 @@ func (db *DB) SetWatchitemForceRefresh(ctx context.Context, ticker string, force
 	}
 	return db.WithTx(ctx, func(exec Execer) error {
 		_, err := exec.ExecContext(ctx, "UPDATE watchlist SET force_full_refresh = ? WHERE ticker = ?", val, ticker)
+		return err
+	})
+}
+
+// API Key DB storage methods
+func (db *DB) SetAPIKey(ctx context.Context, name, value string) error {
+	name = strings.TrimSpace(name)
+	return db.WithTx(ctx, func(exec Execer) error {
+		_, err := exec.ExecContext(ctx, `
+			INSERT INTO api_keys (key_name, key_value, updated_at)
+			VALUES (?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(key_name) DO UPDATE SET key_value=excluded.key_value, updated_at=CURRENT_TIMESTAMP
+		`, name, value)
+		return err
+	})
+}
+
+func (db *DB) GetAPIKey(ctx context.Context, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	var val string
+	err := db.ReadDB.QueryRowContext(ctx, "SELECT key_value FROM api_keys WHERE key_name = ?", name).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
+}
+
+func (db *DB) GetAPIKeysMap(ctx context.Context) (map[string]string, error) {
+	rows, err := db.ReadDB.QueryContext(ctx, "SELECT key_name, key_value FROM api_keys")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := make(map[string]string)
+	for rows.Next() {
+		var name, val string
+		if err := rows.Scan(&name, &val); err == nil {
+			keys[name] = val
+		}
+	}
+	return keys, nil
+}
+
+func (db *DB) DeleteAPIKey(ctx context.Context, name string) error {
+	name = strings.TrimSpace(name)
+	return db.WithTx(ctx, func(exec Execer) error {
+		_, err := exec.ExecContext(ctx, "DELETE FROM api_keys WHERE key_name = ?", name)
 		return err
 	})
 }

@@ -271,3 +271,70 @@ func TestDeleteWatchitem(t *testing.T) {
 		t.Fatalf("Deleting non-existent watchitem returned error: %v", err)
 	}
 }
+
+func TestPersistentDBFileAndRestart(t *testing.T) {
+	tempDir := t.TempDir()
+	dbFilePath := tempDir + "/test_finbase.db"
+
+	ctx := context.Background()
+
+	// 1. Initial creation and data write
+	db1, err := NewDB(dbFilePath)
+	if err != nil {
+		t.Fatalf("Failed to initialize file DB: %v", err)
+	}
+
+	if _, err := db1.AddWatchitem(ctx, "NVDA", 15); err != nil {
+		db1.Close()
+		t.Fatalf("Failed to add watchitem to file DB: %v", err)
+	}
+
+	compID, err := db1.UpsertCompany(ctx, &Company{
+		Ticker: "NVDA",
+		Name:   "NVIDIA Corporation",
+	})
+	if err != nil {
+		db1.Close()
+		t.Fatalf("Failed to upsert company in file DB: %v", err)
+	}
+
+	if err := db1.InsertMarketData(ctx, compID, &MarketData{
+		CurrentPrice: 120.50,
+		Volume:       5000000,
+	}); err != nil {
+		db1.Close()
+		t.Fatalf("Failed to insert market data: %v", err)
+	}
+
+	if err := db1.Close(); err != nil {
+		t.Fatalf("Failed to close file DB: %v", err)
+	}
+
+	// 2. Re-open existing DB file (simulate container restart)
+	db2, err := NewDB(dbFilePath)
+	if err != nil {
+		t.Fatalf("Failed to reopen file DB: %v", err)
+	}
+	defer db2.Close()
+
+	list, err := db2.GetWatchlist(ctx)
+	if err != nil {
+		t.Fatalf("Failed to query watchlist after reopen: %v", err)
+	}
+
+	if len(list) != 1 || list[0].Ticker != "NVDA" || list[0].Priority != 15 {
+		t.Errorf("Unexpected watchlist after restart: %+v", list)
+	}
+
+	data, err := db2.GetConsolidatedData(ctx, "NVDA")
+	if err != nil {
+		t.Fatalf("Failed to query consolidated data after reopen: %v", err)
+	}
+
+	if data.Company.Name != "NVIDIA Corporation" {
+		t.Errorf("Unexpected company name after restart: %s", data.Company.Name)
+	}
+	if len(data.MarketData) != 1 || data.MarketData[0].CurrentPrice != 120.50 {
+		t.Errorf("Unexpected market data after restart: %+v", data.MarketData)
+	}
+}
