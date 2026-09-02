@@ -10,6 +10,7 @@ import (
 
 	"finbase/clients"
 	"finbase/db"
+	"finbase/env"
 	"finbase/web"
 	"finbase/worker"
 )
@@ -147,6 +148,7 @@ type Server struct {
 	broker     *SSEBroker
 	clientMgr  *clients.ClientManager
 	workerPool *worker.WorkerPool
+	envSvc     *env.EnvService
 	mux        *http.ServeMux
 	apiKey     string
 	jwtSecret  []byte
@@ -162,6 +164,10 @@ func NewServer(database *db.DB, broker *SSEBroker, apiKey string, jwtSecret []by
 	}
 	s.routes()
 	return s
+}
+
+func (s *Server) SetEnvService(envSvc *env.EnvService) {
+	s.envSvc = envSvc
 }
 
 func (s *Server) SetClientManager(clientMgr *clients.ClientManager) {
@@ -187,9 +193,18 @@ func (s *Server) routes() {
 	apiMux.HandleFunc("/api/watchlist/refresh", s.handleWatchlistRefresh)
 	apiMux.HandleFunc("/api/data/company/", s.handleCompanyData)
 	apiMux.HandleFunc("/api/status", s.handleStatus)
+	apiMux.HandleFunc("/api/env/keys", s.handleEnvKeys)
+	apiMux.HandleFunc("/api/env/keys/test", s.handleEnvKeysTest)
 	apiMux.Handle("/api/sse", s.broker)
 
-	s.mux.Handle("/api/", AuthMiddleware(s.apiKey, s.jwtSecret, apiMux))
+	getAPIKey := func() string {
+		if s.envSvc != nil {
+			return s.envSvc.GetSystemAPIKey()
+		}
+		return s.apiKey
+	}
+
+	s.mux.Handle("/api/", AuthMiddleware(getAPIKey, s.jwtSecret, apiMux))
 
 	// Embedded static web dashboard
 	fileServer := http.FileServer(http.FS(web.Content))
@@ -382,5 +397,87 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"job_summary":      jobSummary,
 		"recent_activity":  recentHistory,
 		"server_time":      time.Now(),
+	})
+}
+
+func (s *Server) handleEnvKeys(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.envSvc == nil {
+		http.Error(w, `{"error":"env service not available"}`, http.StatusInternalServerError)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		keys, err := s.envSvc.GetKeyStatuses(r.Context())
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(keys)
+
+	case http.MethodPost:
+		var req struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" || req.Value == "" {
+			http.Error(w, `{"error":"invalid request payload, 'name' and 'value' required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := s.envSvc.SetAPIKey(r.Context(), req.Name, req.Value); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "success",
+			"name":   req.Name,
+		})
+
+	case http.MethodDelete:
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			http.Error(w, `{"error":"name parameter required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := s.envSvc.DeleteAPIKey(r.Context(), name); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "deleted",
+			"name":   name,
+		})
+
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleEnvKeysTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.envSvc == nil {
+		http.Error(w, `{"error":"env service not available"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		http.Error(w, `{"error":"invalid request payload, 'name' required"}`, http.StatusBadRequest)
+		return
+	}
+
+	functional, msg := s.envSvc.TestKey(r.Context(), req.Name)
+	json.NewEncoder(w).Encode(map[string]any{
+		"name":           req.Name,
+		"functional":     functional,
+		"status_message": msg,
 	})
 }

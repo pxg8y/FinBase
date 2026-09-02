@@ -90,26 +90,31 @@ func ValidateJWT(tokenStr string, secret []byte) bool {
 }
 
 // AuthMiddleware validates either API Key (external) or short-lived JWT (dashboard).
-func AuthMiddleware(apiKey string, jwtSecret []byte, next http.Handler) http.Handler {
+func AuthMiddleware(apiKeyProvider func() string, jwtSecret []byte, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		currentAPIKey := ""
+		if apiKeyProvider != nil {
+			currentAPIKey = apiKeyProvider()
+		}
+
 		// 1. Check query parameter `token` or `api_key` (e.g. for SSE browser connections)
 		tokenQuery := r.URL.Query().Get("token")
 		if tokenQuery != "" {
-			if ValidateJWT(tokenQuery, jwtSecret) || (apiKey != "" && tokenQuery == apiKey) {
+			if ValidateJWT(tokenQuery, jwtSecret) || (currentAPIKey != "" && tokenQuery == currentAPIKey) {
 				next.ServeHTTP(w, r)
 				return
 			}
 		}
 
 		apiKeyQuery := r.URL.Query().Get("api_key")
-		if apiKeyQuery != "" && apiKey != "" && apiKeyQuery == apiKey {
+		if apiKeyQuery != "" && currentAPIKey != "" && apiKeyQuery == currentAPIKey {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// 2. Check X-API-Key header
 		headerKey := r.Header.Get("X-API-Key")
-		if headerKey != "" && apiKey != "" && headerKey == apiKey {
+		if headerKey != "" && currentAPIKey != "" && headerKey == currentAPIKey {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -118,7 +123,7 @@ func AuthMiddleware(apiKey string, jwtSecret []byte, next http.Handler) http.Han
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if (apiKey != "" && token == apiKey) || ValidateJWT(token, jwtSecret) {
+			if (currentAPIKey != "" && token == currentAPIKey) || ValidateJWT(token, jwtSecret) {
 				next.ServeHTTP(w, r)
 				return
 			}

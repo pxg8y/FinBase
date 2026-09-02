@@ -13,6 +13,7 @@ import (
 	"finbase/api"
 	"finbase/clients"
 	"finbase/db"
+	"finbase/env"
 	"finbase/worker"
 )
 
@@ -44,6 +45,13 @@ func main() {
 
 	clientMgr := clients.NewClientManager(secUserAgent, finnhubAPIKey, openFIGIAPIKey, tiingoAPIKey, twelveDataAPIKey, fmpAPIKey)
 	clientMgr.SetFREDAPIKey(fredAPIKey)
+
+	apiKey := os.Getenv("API_KEY")
+	envSvc := env.NewEnvService(database, clientMgr, apiKey)
+	if err := envSvc.LoadAndApplyKeys(context.Background()); err != nil {
+		log.Printf("Warning: failed loading API keys from DB: %v", err)
+	}
+
 	broker := api.NewSSEBroker()
 
 	wp := worker.NewWorkerPool(database, clientMgr, broker, 0)
@@ -52,7 +60,6 @@ func main() {
 
 	wp.Start(ctx)
 
-	apiKey := os.Getenv("API_KEY")
 	jwtSecretStr := os.Getenv("JWT_SECRET")
 	var jwtSecret []byte
 	if jwtSecretStr != "" {
@@ -62,6 +69,7 @@ func main() {
 	}
 
 	server := api.NewServer(database, broker, apiKey, jwtSecret)
+	server.SetEnvService(envSvc)
 	server.SetClientManager(clientMgr)
 	server.SetWorkerPool(wp)
 
