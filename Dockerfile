@@ -1,23 +1,12 @@
-# Multi-stage Dockerfile for FinBase (FDAAE)
-# Stage 1: Build binary
-FROM golang:1.25-alpine AS builder
+# Dockerfile for FinBase (FDAAE)
+FROM scratch
 
-WORKDIR /app
+# Configure Go TLS CA certificate bundle path
+ENV SSL_CERT_FILE=/ca-certificates.crt
 
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o fdaae main.go
-
-# Stage 2: Distroless minimal image with built-in CA certificate bundle
-FROM gcr.io/distroless/static-debian12
-
-WORKDIR /app
-
-COPY --from=builder /app/fdaae /app/fdaae
+# Copy root CA certificates and static binary into container
+COPY ca-certificates.crt fdaae /
 
 EXPOSE 8080
 
-ENTRYPOINT ["/app/fdaae"]
+ENTRYPOINT ["/fdaae"]
