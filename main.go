@@ -19,7 +19,7 @@ import (
 func main() {
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
-		dbPath = "data/finbase.db"
+		dbPath = "/app/data/finbase.db"
 	}
 
 	port := os.Getenv("PORT")
