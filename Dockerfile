@@ -20,4 +20,7 @@ COPY --from=builder /app/fdaae /app/fdaae
 
 EXPOSE 8080
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/app/fdaae", "-healthcheck"]
+
 ENTRYPOINT ["/app/fdaae"]
