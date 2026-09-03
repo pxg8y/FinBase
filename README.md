@@ -64,6 +64,9 @@ The system orchestrates free data sources. Strict rate limiting per API is manda
 To eliminate external dependencies (such as external reverse proxies), deployment uses direct Docker container management with isolated pre-flight testing.
 The deployment script pulls code, builds the new Docker image, starts a temporary test container on port 9001 to run health checks, swaps out the production container running on port 9000 (`finbase`), and performs general cleanup of unused images.
 
+**Health Checks:**
+The container performs local health checks using a custom flag `-healthcheck`. This queries the local application to verify health without needing external dependencies like `curl` installed in the minimal distroless production container.
+
 deploy.sh (Implementation):
 #!/bin/bash
 set -e

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,14 +19,34 @@ import (
 )
 
 func main() {
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "/app/data/finbase.db"
-	}
+	healthCheck := flag.Bool("healthcheck", false, "Run internal health check")
+	flag.Parse()
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	if *healthCheck {
+		client := http.Client{Timeout: 5 * time.Second}
+		url := fmt.Sprintf("http://localhost:%s/api/health", port)
+		resp, err := client.Get(url)
+		if err != nil {
+			fmt.Printf("Health check failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			fmt.Printf("Health check failed with status code: %d\n", resp.StatusCode)
+			os.Exit(1)
+		}
+		fmt.Println("Health check passed.")
+		os.Exit(0)
+	}
+
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/app/data/finbase.db"
 	}
 
 	secUserAgent := os.Getenv("SEC_USER_AGENT")
