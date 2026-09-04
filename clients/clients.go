@@ -2,6 +2,9 @@ package clients
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -555,8 +558,45 @@ func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCom
 		buf.Reset()
 		defer BufferPool.Put(buf)
 
-		if _, err := buf.ReadFrom(resp.Body); err != nil {
-			return fmt.Errorf("sec read body error: %w", err)
+		switch resp.Header.Get("Content-Encoding") {
+		case "gzip":
+			reader, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				return fmt.Errorf("sec gzip decode error: %w", err)
+			}
+			defer reader.Close()
+			if _, err := buf.ReadFrom(reader); err != nil {
+				return fmt.Errorf("sec read body error: %w", err)
+			}
+		case "deflate":
+			// Read the entire body first to handle zlib vs raw deflate ambiguity
+			rawBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("sec read body error: %w", err)
+			}
+
+			// Try zlib first
+			zlibReader, zlibErr := zlib.NewReader(bytes.NewReader(rawBody))
+			if zlibErr == nil {
+				if _, err := buf.ReadFrom(zlibReader); err == nil {
+					zlibReader.Close()
+					break // Success
+				}
+				zlibReader.Close()
+			}
+
+			// Fallback to raw flate
+			buf.Reset()
+			flateReader := flate.NewReader(bytes.NewReader(rawBody))
+			if _, err := buf.ReadFrom(flateReader); err != nil {
+				flateReader.Close()
+				return fmt.Errorf("sec deflate decode error: %w", err)
+			}
+			flateReader.Close()
+		default:
+			if _, err := buf.ReadFrom(resp.Body); err != nil {
+				return fmt.Errorf("sec read body error: %w", err)
+			}
 		}
 
 		var f SECCompanyFacts
