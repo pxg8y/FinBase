@@ -1,6 +1,10 @@
 package clients
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -544,5 +548,109 @@ func TestFetchInsiderAndFRED(t *testing.T) {
 	}
 	if len(macros) != 1 || macros[0].SeriesID != "DGS10" || macros[0].Value != 4.52 {
 		t.Errorf("Unexpected macro indicator: %+v", macros)
+	}
+}
+
+func TestFetchSECFactsCompression(t *testing.T) {
+	mockFacts := SECCompanyFacts{
+		CIK:        320193,
+		EntityName: "Apple Inc.",
+	}
+	mockData, err := json.Marshal(mockFacts)
+	if err != nil {
+		t.Fatalf("Failed to marshal mock data: %v", err)
+	}
+
+	tests := []struct {
+		name             string
+		encoding         string
+		compressFunc     func([]byte) []byte
+	}{
+		{
+			name:     "Uncompressed",
+			encoding: "",
+			compressFunc: func(b []byte) []byte {
+				return b
+			},
+		},
+		{
+			name:     "Gzip Compressed",
+			encoding: "gzip",
+			compressFunc: func(b []byte) []byte {
+				var buf bytes.Buffer
+				w := gzip.NewWriter(&buf)
+				w.Write(b)
+				w.Close()
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "Deflate Compressed (Zlib)",
+			encoding: "deflate",
+			compressFunc: func(b []byte) []byte {
+				var buf bytes.Buffer
+				w := zlib.NewWriter(&buf)
+				w.Write(b)
+				w.Close()
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "Deflate Compressed (Raw Flate)",
+			encoding: "deflate",
+			compressFunc: func(b []byte) []byte {
+				var buf bytes.Buffer
+				w, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+				w.Write(b)
+				w.Close()
+				return buf.Bytes()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Accept-Encoding") != "gzip, deflate" {
+					t.Errorf("Expected Accept-Encoding header 'gzip, deflate', got %s", r.Header.Get("Accept-Encoding"))
+				}
+
+				if tt.encoding != "" {
+					w.Header().Set("Content-Encoding", tt.encoding)
+				}
+				w.Header().Set("Content-Type", "application/json")
+
+				w.Write(tt.compressFunc(mockData))
+			}))
+			defer server.Close()
+
+			cm := NewClientManager("TestApp user@test.com", "", "", "", "", "")
+			cm.httpClient = server.Client()
+
+			// Replace URL internally for testing by modifying transport or directly doing the request to server.
+			cm.httpClient = &http.Client{
+				Transport: &mockTripper{
+					roundTripFunc: func(req *http.Request) (*http.Response, error) {
+						// Forward the request to our local test server
+						req.URL.Scheme = "http"
+						req.URL.Host = server.Listener.Addr().String()
+
+						return server.Client().Transport.RoundTrip(req)
+					},
+				},
+			}
+
+			facts, err := cm.FetchSECFacts(context.Background(), "320193")
+			if err != nil {
+				t.Fatalf("FetchSECFacts failed: %v", err)
+			}
+
+			if facts.EntityName != mockFacts.EntityName {
+				t.Errorf("Expected entity name %s, got %s", mockFacts.EntityName, facts.EntityName)
+			}
+			if facts.CIK != mockFacts.CIK {
+				t.Errorf("Expected CIK %d, got %d", mockFacts.CIK, facts.CIK)
+			}
+		})
 	}
 }
