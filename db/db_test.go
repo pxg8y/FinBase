@@ -338,3 +338,155 @@ func TestPersistentDBFileAndRestart(t *testing.T) {
 		t.Errorf("Unexpected market data after restart: %+v", data.MarketData)
 	}
 }
+
+func TestFetchNextPendingWatchitem(t *testing.T) {
+	database, err := NewDB(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to initialize memory DB: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// 1. Empty database - should return nil, nil
+	item, err := database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error on empty DB: %v", err)
+	}
+	if item != nil {
+		t.Errorf("Expected nil item for empty DB, got: %+v", item)
+	}
+
+	// 2. Only non-pending items - should return nil, nil
+	_, err = database.WriteDB.ExecContext(ctx,
+		"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+		"COMPLETED_TICKER", 100, "completed",
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert completed watchitem: %v", err)
+	}
+	_, err = database.WriteDB.ExecContext(ctx,
+		"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+		"QUEUED_TICKER", 100, "queued",
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert queued watchitem: %v", err)
+	}
+
+	item, err = database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error when only non-pending items exist: %v", err)
+	}
+	if item != nil {
+		t.Errorf("Expected nil item when no pending items exist, got: %+v", item)
+	}
+
+	// 3. Insert pending items with different priorities and timestamps
+	// LOW_PRIO: priority 5, last_updated 30 mins ago
+	// HIGH_PRIO_NEW: priority 10, last_updated 5 mins ago
+	// HIGH_PRIO_OLD: priority 10, last_updated 20 mins ago
+	_, err = database.WriteDB.ExecContext(ctx,
+		"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', datetime('now', '-30 minutes'))",
+		"LOW_PRIO", 5,
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert LOW_PRIO: %v", err)
+	}
+	_, err = database.WriteDB.ExecContext(ctx,
+		"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', datetime('now', '-5 minutes'))",
+		"HIGH_PRIO_NEW", 10,
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert HIGH_PRIO_NEW: %v", err)
+	}
+	_, err = database.WriteDB.ExecContext(ctx,
+		"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', datetime('now', '-20 minutes'))",
+		"HIGH_PRIO_OLD", 10,
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert HIGH_PRIO_OLD: %v", err)
+	}
+
+	// Should select HIGH_PRIO_OLD (highest priority = 10, older last_updated = -20 mins vs -5 mins)
+	item, err = database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error fetching next pending watchitem: %v", err)
+	}
+	if item == nil {
+		t.Fatalf("Expected watchitem, got nil")
+	}
+	if item.Ticker != "HIGH_PRIO_OLD" {
+		t.Errorf("Expected ticker HIGH_PRIO_OLD, got %s", item.Ticker)
+	}
+	if item.Priority != 10 {
+		t.Errorf("Expected priority 10, got %d", item.Priority)
+	}
+	if item.Status != "pending" {
+		t.Errorf("Expected status pending, got %s", item.Status)
+	}
+	if item.LastUpdated.IsZero() {
+		t.Errorf("Expected valid LastUpdated timestamp, got zero time")
+	}
+
+	// 4. Update HIGH_PRIO_OLD status to 'processing'
+	if err := database.UpdateWatchitemStatus(ctx, "HIGH_PRIO_OLD", "processing"); err != nil {
+		t.Fatalf("Failed to update status: %v", err)
+	}
+
+	// Next should be HIGH_PRIO_NEW
+	item, err = database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error fetching next pending watchitem: %v", err)
+	}
+	if item == nil || item.Ticker != "HIGH_PRIO_NEW" {
+		t.Errorf("Expected HIGH_PRIO_NEW, got: %+v", item)
+	}
+
+	// 5. Update HIGH_PRIO_NEW status to 'completed'
+	if err := database.UpdateWatchitemStatus(ctx, "HIGH_PRIO_NEW", "completed"); err != nil {
+		t.Fatalf("Failed to update status: %v", err)
+	}
+
+	// Next should be LOW_PRIO
+	item, err = database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error fetching next pending watchitem: %v", err)
+	}
+	if item == nil || item.Ticker != "LOW_PRIO" {
+		t.Errorf("Expected LOW_PRIO, got: %+v", item)
+	}
+
+	// 6. Update LOW_PRIO status to 'failed'
+	if err := database.UpdateWatchitemStatus(ctx, "LOW_PRIO", "failed"); err != nil {
+		t.Fatalf("Failed to update status: %v", err)
+	}
+
+	// No more pending items
+	item, err = database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error fetching next pending watchitem: %v", err)
+	}
+	if item != nil {
+		t.Errorf("Expected nil when no pending items remain, got: %+v", item)
+	}
+
+	// 7. Verify RFC3339 formatted timestamp parsing
+	_, err = database.WriteDB.ExecContext(ctx,
+		"INSERT INTO watchlist (ticker, priority, status, last_updated) VALUES (?, ?, 'pending', '2025-01-15T12:00:00Z')",
+		"RFC3339_TICKER", 1,
+	)
+	if err != nil {
+		t.Fatalf("Failed to insert RFC3339 formatted watchitem: %v", err)
+	}
+
+	item, err = database.FetchNextPendingWatchitem(ctx)
+	if err != nil {
+		t.Fatalf("Unexpected error fetching RFC3339 item: %v", err)
+	}
+	if item == nil || item.Ticker != "RFC3339_TICKER" {
+		t.Fatalf("Expected RFC3339_TICKER, got: %+v", item)
+	}
+	if item.LastUpdated.IsZero() {
+		t.Errorf("Expected LastUpdated to be parsed for RFC3339 timestamp")
+	}
+}
