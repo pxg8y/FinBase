@@ -585,6 +585,39 @@ func TestFetchSECFactsCompression(t *testing.T) {
 			},
 		},
 		{
+			name:     "Auto Decompressed by Transport (Uncompressed true)",
+			encoding: "gzip",
+			compressFunc: func(b []byte) []byte {
+				var buf bytes.Buffer
+				w := gzip.NewWriter(&buf)
+				w.Write(b)
+				w.Close()
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "Gzip Compressed (Uppercase GZIP)",
+			encoding: "GZIP",
+			compressFunc: func(b []byte) []byte {
+				var buf bytes.Buffer
+				w := gzip.NewWriter(&buf)
+				w.Write(b)
+				w.Close()
+				return buf.Bytes()
+			},
+		},
+		{
+			name:     "Gzip Compressed (Whitespace and multiple)",
+			encoding: " gzip, deflate ",
+			compressFunc: func(b []byte) []byte {
+				var buf bytes.Buffer
+				w := gzip.NewWriter(&buf)
+				w.Write(b)
+				w.Close()
+				return buf.Bytes()
+			},
+		},
+		{
 			name:     "Deflate Compressed (Zlib)",
 			encoding: "deflate",
 			compressFunc: func(b []byte) []byte {
@@ -635,7 +668,20 @@ func TestFetchSECFactsCompression(t *testing.T) {
 						req.URL.Scheme = "http"
 						req.URL.Host = server.Listener.Addr().String()
 
-						return server.Client().Transport.RoundTrip(req)
+						res, err := server.Client().Transport.RoundTrip(req)
+
+						// Simulate Uncompressed=true for that specific test case by manually setting it
+						// since we intercept the transport round trip
+						if tt.name == "Auto Decompressed by Transport (Uncompressed true)" && res != nil {
+							// Wait, we need to actually decompress it here to simulate Transport behavior
+							if strings.Contains(res.Header.Get("Content-Encoding"), "gzip") {
+								r, _ := gzip.NewReader(res.Body)
+								res.Body = r // Use decompressed body
+								res.Uncompressed = true
+							}
+						}
+
+						return res, err
 					},
 				},
 			}
@@ -652,5 +698,29 @@ func TestFetchSECFactsCompression(t *testing.T) {
 				t.Errorf("Expected CIK %d, got %d", mockFacts.CIK, facts.CIK)
 			}
 		})
+	}
+}
+
+func TestFetchSECFactsIntegrationMSFT(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	cm := NewClientManager("FinBaseTestApp user@test.com", "", "", "", "", "")
+
+	facts, err := cm.FetchSECFacts(context.Background(), "0000789019")
+	if err != nil {
+		t.Fatalf("Failed to fetch MSFT fundamentals: %v", err)
+	}
+
+	if facts == nil {
+		t.Fatalf("Expected facts to not be nil")
+	}
+
+	if facts.EntityName != "MICROSOFT CORPORATION" {
+		t.Errorf("Expected entity name 'MICROSOFT CORPORATION', got %q", facts.EntityName)
+	}
+	if facts.CIK != 789019 {
+		t.Errorf("Expected CIK 789019, got %d", facts.CIK)
 	}
 }

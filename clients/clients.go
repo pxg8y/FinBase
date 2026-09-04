@@ -541,6 +541,8 @@ func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCom
 		}
 
 		req.Header.Set("User-Agent", cm.secUserAgent)
+		// We explicitly set this so our default Transport doesn't get confused,
+		// but we must robustly handle Uncompressed and various casings of Content-Encoding.
 		req.Header.Set("Accept-Encoding", "gzip, deflate")
 
 		resp, err := cm.httpClient.Do(req)
@@ -558,8 +560,10 @@ func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCom
 		buf.Reset()
 		defer BufferPool.Put(buf)
 
-		switch resp.Header.Get("Content-Encoding") {
-		case "gzip":
+		ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+
+		switch {
+		case !resp.Uncompressed && strings.Contains(ce, "gzip"):
 			reader, err := gzip.NewReader(resp.Body)
 			if err != nil {
 				return fmt.Errorf("sec gzip decode error: %w", err)
@@ -568,7 +572,7 @@ func (cm *ClientManager) FetchSECFacts(ctx context.Context, cik string) (*SECCom
 			if _, err := buf.ReadFrom(reader); err != nil {
 				return fmt.Errorf("sec read body error: %w", err)
 			}
-		case "deflate":
+		case !resp.Uncompressed && strings.Contains(ce, "deflate"):
 			// Read the entire body first to handle zlib vs raw deflate ambiguity
 			rawBody, err := io.ReadAll(resp.Body)
 			if err != nil {
