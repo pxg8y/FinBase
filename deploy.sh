@@ -109,12 +109,16 @@ check_and_install_prereqs() {
 
 check_and_install_prereqs
 
-# 1. Git Pull (force overwrite local changes unless SKIP_GIT_PULL is set)
+# 1. Git Pull (preserve local changes if present, otherwise reset)
 echo "📦 Pulling latest changes from Git..."
 if [ "${SKIP_GIT_PULL}" != "true" ]; then
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         git fetch --all 2>/dev/null || true
-        git reset --hard origin/main 2>/dev/null || true
+        if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ] || ! git diff-index --quiet HEAD --; then
+            echo "Local repository has local commits or uncommitted changes. Preserving local state."
+        else
+            git reset --hard origin/main 2>/dev/null || true
+        fi
     fi
 fi
 
@@ -153,7 +157,7 @@ docker run -d \
     --env-file .env \
     -e PORT=9000 \
     -v finbase_data:/app/data \
-    -p $TEST_PORT:9000 \
+    -p 127.0.0.1:$TEST_PORT:9000 \
     "$IMAGE_NAME"
 
 # 4. Health Check Wait Loop on Test Container
@@ -199,10 +203,11 @@ fi
 echo "🚀 Starting production container $PROD_CONTAINER on port $PROD_PORT..."
 docker run -d \
     --name "$PROD_CONTAINER" \
+    --restart unless-stopped \
     --env-file .env \
     -e PORT=$PROD_PORT \
     -v finbase_data:/app/data \
-    -p $PROD_PORT:$PROD_PORT \
+    -p 127.0.0.1:$PROD_PORT:$PROD_PORT \
     "$IMAGE_NAME"
 
 # 7. Final Health Check on Production Container
